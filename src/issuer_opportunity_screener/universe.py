@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
 from pathlib import Path
+
+from issuer_opportunity_screener.sources.base import UniverseIssuer
 
 BASKETS = {
     "Global Communications and Digital Platforms",
@@ -19,17 +20,6 @@ BASKETS = {
 
 class UniverseError(ValueError):
     """The universe file is malformed; message names the offending rows."""
-
-
-@dataclass(frozen=True)
-class UniverseIssuer:
-    issuer: str
-    ticker: str
-    basket: str
-    country: str
-    sector: str
-    recognition_score: float
-    internal_rating: str | None = None
 
 
 def load_universe(path: Path) -> list[UniverseIssuer]:
