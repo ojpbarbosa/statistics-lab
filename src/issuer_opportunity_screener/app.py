@@ -274,6 +274,7 @@ def render_issuer_tab(snap: Snapshot, scores: list[IssuerScore]):
         "viable" if score.viable else "not viable",
         delta_color="normal" if score.viable else "inverse",
     )
+    st.caption(f"Viability: {score.viability_note}")
 
     st.subheader("1y spread history vs Brazil")
     render_history_chart(snap, ticker, row.issuer)

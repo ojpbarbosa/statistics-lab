@@ -509,6 +509,16 @@ class BloombergSource:
                     credit.quality_notes.append("no agency ratings resolved from bond, CDS, or equity")
                 if bond_note is not None:
                     credit.quality_notes.append(bond_note)
+                if bond is not None:
+                    z_bps = bond.get("z_spread_bps")
+                    px = bond.get("last_price")
+                    if (z_bps is not None and z_bps > 1000) or (px is not None and px < 50):
+                        distress_note = (
+                            f"selected bond {bond.get('security')} looks distressed or stale "
+                            f"(px {px}, z-spread {z_bps} bps); verify on DES before pitching"
+                        )
+                        credit.quality_notes.append(distress_note)
+                        log.warn(f"{issuer.ticker}: {distress_note}")
                 credits.append(credit)
 
                 spread_security = cds_security if credit.cds_5y_bps is not None else credit.bond.security

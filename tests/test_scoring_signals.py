@@ -130,3 +130,17 @@ def test_composite_rating_rank_any_mixed_providers():
     assert composite_rating_rank_any({}) is None
     assert composite_rating_rank_any({"sp": "NR"}) is None
     assert composite_rating_rank_any(None) is None
+
+
+def test_viability_explanation_strings():
+    from issuer_opportunity_screener.scoring import viability_explanation
+
+    assert "no spread" in viability_explanation(None, False, None, 11)
+    assert "at or above" in viability_explanation(30.0, True, None, 11)
+    assert "more than 20 bps through Brazil" in viability_explanation(-45.0, False, 6, 11)
+    edge_ok = viability_explanation(-13.0, True, 6, 11)
+    assert "within" in edge_ok and "A-" in edge_ok and "stronger than Brazil (BB)" in edge_ok and "edge case" in edge_ok
+    edge_no_rating = viability_explanation(-13.0, False, None, 11)
+    assert "no issuer rating" in edge_no_rating
+    edge_weak = viability_explanation(-13.0, False, 12, 11)
+    assert "not stronger" in edge_weak

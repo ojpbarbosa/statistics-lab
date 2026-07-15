@@ -101,6 +101,40 @@ def viability(
     return diff, False
 
 
+def viability_explanation(
+    diff: float | None,
+    viable: bool,
+    issuer_rank: int | None,
+    brazil_rank: int | None,
+) -> str:
+    """Human-readable verdict for the desk: exactly why a name is or is not
+    viable under the spread-vs-Brazil rule."""
+    brazil_label = RATING_ORDER[brazil_rank] if brazil_rank is not None else "unknown"
+    if diff is None:
+        return "no spread available, so no viability verdict"
+    if diff >= 0:
+        return f"spread is {diff:+.0f} bps vs Brazil, at or above the benchmark, so viable"
+    if diff < -VIABILITY_TOLERANCE_BPS:
+        return (
+            f"{diff:+.0f} bps is more than {VIABILITY_TOLERANCE_BPS:.0f} bps through Brazil, so not viable"
+        )
+    if issuer_rank is None:
+        return (
+            f"{diff:+.0f} bps is within the {VIABILITY_TOLERANCE_BPS:.0f} bps tolerance, "
+            f"but no issuer rating is available to compare against Brazil ({brazil_label}), so not viable"
+        )
+    issuer_label = RATING_ORDER[issuer_rank]
+    if viable:
+        return (
+            f"{diff:+.0f} bps is within the {VIABILITY_TOLERANCE_BPS:.0f} bps tolerance and rating "
+            f"{issuer_label} is stronger than Brazil ({brazil_label}), so viable (edge case)"
+        )
+    return (
+        f"{diff:+.0f} bps is within the {VIABILITY_TOLERANCE_BPS:.0f} bps tolerance, "
+        f"but rating {issuer_label} is not stronger than Brazil ({brazil_label}), so not viable"
+    )
+
+
 # --- Block 1: Credit and Spread Attractiveness -------------------------------
 
 def spread_level_score(spread_bps: float | None) -> float | None:
@@ -182,6 +216,7 @@ class IssuerScore:
     partial_data: bool
     blocks: list[BlockScore]
     composite_detail: str = ""  # the exact weighted-average arithmetic
+    viability_note: str = ""  # why the name is or is not viable vs Brazil
 
 
 def _tier(composite: float) -> str:
@@ -405,7 +440,10 @@ def score_snapshot(snap: Snapshot) -> list[IssuerScore]:
             + " + ".join(f"{b.weight:.2f} * {b.score:.1f}" for b in available)
             + f") / {weight_sum:.2f} = {composite:.1f}"
         )
-        diff, viable = viability(spread, ext_rank, brazil_cds, brazil_rank)
+        # The desk's edge case needs a rating to compare against Brazil;
+        # fall back to the desk-set internal rating when no agency resolves.
+        viability_rank = ext_rank if ext_rank is not None else internal_rank
+        diff, viable = viability(spread, viability_rank, brazil_cds, brazil_rank)
         partial = any(b.score is None for b in blocks) or bool(row.quality_notes)
         scores.append(
             IssuerScore(
@@ -417,6 +455,7 @@ def score_snapshot(snap: Snapshot) -> list[IssuerScore]:
                 partial_data=partial,
                 blocks=blocks,
                 composite_detail=composite_detail,
+                viability_note=viability_explanation(diff, viable, viability_rank, brazil_rank),
             )
         )
     return scores

@@ -138,3 +138,59 @@ def test_ratings_all_flows_from_snapshot(snap):
     )
     assert external.score is not None
     assert "median of" in external.detail
+
+
+def _one_issuer_snapshot(tmp_path, spread_bps, internal_rating=None, ratings=None):
+    import datetime as dtmod
+
+    from issuer_opportunity_screener.snapshots import load_snapshot, write_snapshot
+    from issuer_opportunity_screener.sources.base import (
+        BrazilBenchmark,
+        FetchResult,
+        HistoryPoint,
+        IssuerCredit,
+        UniverseIssuer,
+    )
+
+    issuer = UniverseIssuer(
+        issuer="Edge Case", ticker="EDGE", basket="Global Financials",
+        country="Spain", sector="Financials", recognition_score=75.0,
+        internal_rating=internal_rating,
+    )
+    credit = IssuerCredit(
+        ticker="EDGE", cds_5y_bps=spread_bps, cds_liquidity_score=100.0,
+        cds_security="EDGE CDS USD SR 5Y D14 Corp", ratings=ratings or {},
+    )
+    result = FetchResult(
+        as_of=dtmod.datetime(2026, 7, 15, 12, 0),
+        source="fixture",
+        issuers=[credit],
+        history=[
+            HistoryPoint("EDGE", dtmod.date(2026, 7, 1) - dtmod.timedelta(weeks=w), spread_bps, "cds")
+            for w in range(20)
+        ],
+        brazil=BrazilBenchmark(cds_5y_bps=180.0, z_spread_bps=None, rating_sp="BB"),
+    )
+    return load_snapshot(write_snapshot(tmp_path, [issuer], result))
+
+
+def test_edge_case_viable_with_agency_rating(tmp_path):
+    snap = _one_issuer_snapshot(tmp_path, 170.0, ratings={"sp": "A-", "moody": "A3"})
+    score = score_snapshot(snap)[0]
+    assert score.spread_vs_brazil_bps == pytest.approx(-10.0)
+    assert score.viable is True
+    assert "edge case" in score.viability_note
+
+
+def test_edge_case_falls_back_to_internal_rating(tmp_path):
+    snap = _one_issuer_snapshot(tmp_path, 170.0, internal_rating="BBB+")
+    score = score_snapshot(snap)[0]
+    assert score.viable is True
+    assert "BBB+" in score.viability_note
+
+
+def test_edge_case_not_viable_without_any_rating(tmp_path):
+    snap = _one_issuer_snapshot(tmp_path, 170.0)
+    score = score_snapshot(snap)[0]
+    assert score.viable is False
+    assert "no issuer rating" in score.viability_note
