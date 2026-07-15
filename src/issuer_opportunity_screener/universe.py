@@ -1,0 +1,77 @@
+"""Load and validate the issuer universe from data/universe.csv."""
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+
+BASKETS = {
+    "Global Communications and Digital Platforms",
+    "Global Consumer and Leisure",
+    "Global Industrials, Autos, and Aerospace",
+    "Global Energy and Materials",
+    "Global Financials",
+    "Global Healthcare and Pharma",
+    "Latin America",
+    "Brazil",
+}
+
+
+class UniverseError(ValueError):
+    """The universe file is malformed; message names the offending rows."""
+
+
+@dataclass(frozen=True)
+class UniverseIssuer:
+    issuer: str
+    ticker: str
+    basket: str
+    country: str
+    sector: str
+    recognition_score: float
+    internal_rating: str | None = None
+
+
+def load_universe(path: Path) -> list[UniverseIssuer]:
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise UniverseError(f"{path}: universe file is empty")
+    issuers: list[UniverseIssuer] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for lineno, row in enumerate(rows, start=2):
+        ticker = (row.get("ticker") or "").strip()
+        if not ticker:
+            errors.append(f"line {lineno}: missing ticker")
+            continue
+        if ticker in seen:
+            errors.append(f"line {lineno}: duplicate ticker {ticker!r}")
+            continue
+        seen.add(ticker)
+        basket = (row.get("basket") or "").strip()
+        if basket not in BASKETS:
+            errors.append(f"line {lineno}: unknown basket {basket!r}")
+            continue
+        try:
+            recognition = float(row.get("recognition_score") or "")
+        except ValueError:
+            errors.append(f"line {lineno}: recognition_score must be a number")
+            continue
+        if not 0.0 <= recognition <= 100.0:
+            errors.append(f"line {lineno}: recognition_score must be within 0-100")
+            continue
+        issuers.append(
+            UniverseIssuer(
+                issuer=(row.get("issuer") or "").strip(),
+                ticker=ticker,
+                basket=basket,
+                country=(row.get("country") or "").strip(),
+                sector=(row.get("sector") or "").strip(),
+                recognition_score=recognition,
+                internal_rating=(row.get("internal_rating") or "").strip() or None,
+            )
+        )
+    if errors:
+        raise UniverseError(f"{path}: " + "; ".join(errors))
+    return issuers
