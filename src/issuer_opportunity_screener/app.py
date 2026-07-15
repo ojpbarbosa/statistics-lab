@@ -7,10 +7,18 @@ button runs the pipeline and falls back gracefully when Bloomberg is away.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+try:
+    import issuer_opportunity_screener  # noqa: F401
+except ModuleNotFoundError:
+    # `streamlit run src/issuer_opportunity_screener/app.py` without the package
+    # installed (fresh clone, non-poetry env): make the app self-locating.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from issuer_opportunity_screener.pipeline import run_pipeline
 from issuer_opportunity_screener.scoring import IssuerScore, score_snapshot, screen_frame
