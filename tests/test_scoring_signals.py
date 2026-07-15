@@ -64,6 +64,8 @@ def test_viability_desk_rule():
     assert viability(None, 5, 180.0, 11) == (None, False)
     # within -20, stronger rating unknown: not viable
     assert viability(165.0, None, 180.0, 11)[1] is False
+    # missing Brazil benchmark: no verdict, never a crash
+    assert viability(200.0, 11, None, 11) == (None, False)
 
 
 def test_spread_level_score():

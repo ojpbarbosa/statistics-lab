@@ -61,10 +61,10 @@ def rating_score(rank: int | None) -> float | None:
 def viability(
     spread_bps: float | None,
     issuer_rank: int | None,
-    brazil_cds_bps: float,
+    brazil_cds_bps: float | None,
     brazil_rank: int | None,
 ) -> tuple[float | None, bool]:
-    if spread_bps is None:
+    if spread_bps is None or brazil_cds_bps is None:
         return None, False
     diff = spread_bps - brazil_cds_bps
     if diff >= 0:
