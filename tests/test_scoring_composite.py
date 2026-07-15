@@ -1,7 +1,10 @@
+import dataclasses
+
 import pytest
 
 from issuer_opportunity_screener.scoring import (
     WEIGHTS,
+    normalize_rating,
     score_snapshot,
     screen_frame,
 )
@@ -78,3 +81,28 @@ def test_breakdown_signals_present(snap):
     assert {sig.name for sig in block1.signals} == {
         "spread_level", "history_percentile", "vs_1y_ma", "vs_1y_p75", "vs_peer_median",
     }
+
+
+def test_normalize_rating_tolerates_nan():
+    assert normalize_rating(float("nan")) is None
+
+
+def test_partially_filled_internal_rating_survives_parquet_roundtrip(tmp_path):
+    # A universe where exactly one issuer has an internal_rating and the rest
+    # are None reproduces the partially-filled string column that pandas 3.0
+    # round-trips through parquet as float NaN for the unset entries.
+    universe = make_universe(12)
+    universe = [
+        dataclasses.replace(u, internal_rating="BB+") if i == 0 else u
+        for i, u in enumerate(universe)
+    ]
+    result = FixtureSource().fetch(universe)
+    snap = load_snapshot(write_snapshot(tmp_path, universe, result))
+
+    scores = score_snapshot(snap)  # must not raise AttributeError
+    frame = screen_frame(snap, scores)
+
+    rated = frame[frame.ticker == "TICK0"].iloc[0]
+    assert rated.internal_rating == "BB+"
+    unrated = frame[frame.ticker != "TICK0"]
+    assert unrated.internal_rating.isna().all()

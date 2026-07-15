@@ -37,7 +37,7 @@ def clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
 
 
 def normalize_rating(raw: str | None) -> str | None:
-    if not raw:
+    if not isinstance(raw, str) or not raw.strip():
         return None
     token = re.split(r"[\s(]", raw.strip())[0].upper().rstrip("U")
     token = MOODY_TO_SP.get(token, token)
