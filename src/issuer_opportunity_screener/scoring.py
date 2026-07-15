@@ -9,6 +9,10 @@ import re
 import statistics
 from dataclasses import dataclass
 
+import pandas as pd
+
+from issuer_opportunity_screener.snapshots import Snapshot
+
 RATING_ORDER = [
     "AAA", "AA+", "AA", "AA-", "A+", "A", "A-",
     "BBB+", "BBB", "BBB-", "BB+", "BB", "BB-",
@@ -133,3 +137,183 @@ class BlockScore:
 def block_score(signals: list[SignalScore]) -> float | None:
     scores = [s.score for s in signals if s.score is not None]
     return statistics.fmean(scores) if scores else None
+
+
+WEIGHTS = {
+    "Credit and Spread Attractiveness": 0.35,
+    "Credit Quality and Risk": 0.20,
+    "Market Liquidity and Accessibility": 0.20,
+    "Equity Overlay": 0.10,
+    "Recognition and Client Fit": 0.15,
+}
+
+
+@dataclass(frozen=True)
+class IssuerScore:
+    ticker: str
+    composite: float
+    tier: str
+    viable: bool
+    spread_vs_brazil_bps: float | None
+    partial_data: bool
+    blocks: list[BlockScore]
+
+
+def _tier(composite: float) -> str:
+    if composite >= 70.0:
+        return "A"
+    if composite >= 50.0:
+        return "B"
+    return "C"
+
+
+def _primary_spread(row) -> float | None:
+    if pd.notna(row.cds_5y_bps):
+        return float(row.cds_5y_bps)
+    if pd.notna(row.bond_z_spread_bps):
+        return float(row.bond_z_spread_bps)
+    return None
+
+
+def _opt(value) -> float | None:
+    return float(value) if pd.notna(value) else None
+
+
+def score_snapshot(snap: Snapshot) -> list[IssuerScore]:
+    frame = snap.frame
+    history_by_ticker = {
+        ticker: group.spread_bps.astype(float).tolist()
+        for ticker, group in snap.history.groupby("ticker")
+    }
+    primary = {row.ticker: _primary_spread(row) for row in frame.itertuples()}
+    peer_medians: dict[str, float | None] = {}
+    for row in frame.itertuples():
+        peers = [
+            primary[r.ticker]
+            for r in frame.itertuples()
+            if r.basket == row.basket and r.ticker != row.ticker and primary[r.ticker] is not None
+        ]
+        peer_medians[row.ticker] = statistics.median(peers) if peers else None
+
+    brazil_cds = float(snap.manifest["brazil"]["cds_5y_bps"])
+    brazil_rank = rating_rank(snap.manifest["brazil"]["rating_sp"])
+
+    scores: list[IssuerScore] = []
+    for row in frame.itertuples():
+        spread = primary[row.ticker]
+        if spread is None:
+            continue
+        history = history_by_ticker.get(row.ticker, [])
+        ext_rank = composite_rating_rank(row.rating_moody, row.rating_sp, row.rating_fitch)
+
+        block1 = BlockScore(
+            "Credit and Spread Attractiveness",
+            WEIGHTS["Credit and Spread Attractiveness"],
+            None,
+            [
+                SignalScore("spread_level", spread, spread_level_score(spread)),
+                SignalScore("history_percentile", spread, history_percentile_score(spread, history)),
+                SignalScore("vs_1y_ma", spread, vs_ma_score(spread, history)),
+                SignalScore("vs_1y_p75", spread, vs_p75_score(spread, history)),
+                SignalScore("vs_peer_median", peer_medians[row.ticker], peer_median_score(spread, peer_medians[row.ticker])),
+            ],
+        )
+        block2 = BlockScore(
+            "Credit Quality and Risk",
+            WEIGHTS["Credit Quality and Risk"],
+            None,
+            [
+                SignalScore("external_rating", float(ext_rank) if ext_rank is not None else None, rating_score(ext_rank)),
+                SignalScore(
+                    "internal_rating",
+                    float(rating_rank(row.internal_rating)) if rating_rank(row.internal_rating) is not None else None,
+                    rating_score(rating_rank(row.internal_rating)),
+                ),
+            ],
+        )
+        has_cds = pd.notna(row.cds_5y_bps)
+        block3 = BlockScore(
+            "Market Liquidity and Accessibility",
+            WEIGHTS["Market Liquidity and Accessibility"],
+            None,
+            [
+                SignalScore("cds_available", 1.0 if has_cds else 0.0, 100.0 if has_cds else 0.0),
+                SignalScore("cds_liquidity", _opt(row.cds_liquidity_score), _opt(row.cds_liquidity_score)),
+                SignalScore(
+                    "bond_available",
+                    1.0 if pd.notna(row.bond_security) else 0.0,
+                    100.0 if pd.notna(row.bond_security) else 0.0,
+                ),
+            ],
+        )
+        if pd.isna(row.equity_ticker):
+            block4 = BlockScore("Equity Overlay", WEIGHTS["Equity Overlay"], None, [])
+        else:
+            block4 = BlockScore(
+                "Equity Overlay",
+                WEIGHTS["Equity Overlay"],
+                None,
+                [
+                    SignalScore("momentum_3m", _opt(row.px_chg_3m_pct), clamp(50.0 + row.px_chg_3m_pct) if pd.notna(row.px_chg_3m_pct) else None),
+                    SignalScore("momentum_12m", _opt(row.px_chg_12m_pct), clamp(50.0 + row.px_chg_12m_pct / 2.0) if pd.notna(row.px_chg_12m_pct) else None),
+                    SignalScore("recommendations", _opt(row.rec_balance), clamp(50.0 + 50.0 * row.rec_balance) if pd.notna(row.rec_balance) else None),
+                ],
+            )
+        block5 = BlockScore(
+            "Recognition and Client Fit",
+            WEIGHTS["Recognition and Client Fit"],
+            None,
+            [SignalScore("recognition", float(row.recognition_score), float(row.recognition_score))],
+        )
+
+        blocks = [
+            BlockScore(b.name, b.weight, block_score(b.signals) if b.signals else None, b.signals)
+            for b in (block1, block2, block3, block4, block5)
+        ]
+        available = [b for b in blocks if b.score is not None]
+        composite = round(sum(b.weight * b.score for b in available) / sum(b.weight for b in available), 1)
+        diff, viable = viability(spread, ext_rank, brazil_cds, brazil_rank)
+        partial = any(b.score is None for b in blocks) or bool(row.quality_notes)
+        scores.append(
+            IssuerScore(
+                ticker=row.ticker,
+                composite=composite,
+                tier=_tier(composite),
+                viable=viable,
+                spread_vs_brazil_bps=diff,
+                partial_data=partial,
+                blocks=blocks,
+            )
+        )
+    return scores
+
+
+def screen_frame(snap: Snapshot, scores: list[IssuerScore]) -> pd.DataFrame:
+    by_ticker = {s.ticker: s for s in scores}
+    rows = []
+    for row in snap.frame.itertuples():
+        score = by_ticker.get(row.ticker)
+        if score is None:
+            continue
+        ext_rank = composite_rating_rank(row.rating_moody, row.rating_sp, row.rating_fitch)
+        rows.append(
+            {
+                "issuer": row.issuer,
+                "ticker": row.ticker,
+                "basket": row.basket,
+                "tier": score.tier,
+                "composite": score.composite,
+                "viable": score.viable,
+                "spread_vs_brazil_bps": score.spread_vs_brazil_bps,
+                "cds_5y_bps": _opt(row.cds_5y_bps),
+                "bond_z_spread_bps": _opt(row.bond_z_spread_bps),
+                "bond_last_price": _opt(row.bond_last_price),
+                "rating_composite": RATING_ORDER[ext_rank] if ext_rank is not None else None,
+                "internal_rating": row.internal_rating if pd.notna(row.internal_rating) else None,
+                "recognition_score": float(row.recognition_score),
+                "partial_data": score.partial_data,
+                "quality_notes": row.quality_notes,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    return frame.sort_values("composite", ascending=False).reset_index(drop=True)
