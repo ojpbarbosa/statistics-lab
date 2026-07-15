@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 
+from issuer_opportunity_screener.log import get_logger
 from issuer_opportunity_screener.sources.base import (
     BloombergUnavailable,
     BondSnapshot,
@@ -34,6 +35,8 @@ REFDATA_FIELDS = [
 ]
 BOND_FIELDS = ["CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "YAS_ZSPREAD", "PX_LAST", "CPN"]
 
+
+log = get_logger("bloomberg")
 
 YELLOW_KEYS = (" Corp", " Govt", " Mtge", " Muni", " Pfd", " Equity", " Index", " Curncy", " Comdty")
 
@@ -216,13 +219,16 @@ class BloombergSource:
     # --- fetch -----------------------------------------------------------------
 
     def fetch(self, issuers: list[UniverseIssuer]) -> FetchResult:
+        log.step(f"connecting to Bloomberg at {self.host}:{self.port}")
         session = self._connect()
+        log.info("session established")
         as_of = dt.datetime.now()
         credits: list[IssuerCredit] = []
         history: list[HistoryPoint] = []
         failures: dict[str, str] = {}
 
         brazil = BRAZIL_FALLBACK
+        log.step(f"fetching Brazil benchmark ({BRAZIL_CDS_TICKER})")
         try:
             brazil_row = self._reference_fields(session, [BRAZIL_CDS_TICKER], ["PX_LAST"]).get(BRAZIL_CDS_TICKER, {})
             if "PX_LAST" in brazil_row:
@@ -231,10 +237,16 @@ class BloombergSource:
                     z_spread_bps=None,
                     rating_sp=BRAZIL_FALLBACK.rating_sp,
                 )
+                log.info(f"Brazil 5Y CDS: {brazil.cds_5y_bps:.1f} bps")
+            else:
+                log.warn(f"Brazil benchmark quote missing; using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
         except Exception as exc:  # noqa: BLE001 — benchmark failure must not kill the run
             failures["__BRAZIL__"] = f"benchmark fetch failed, using fallback: {exc}"
+            log.error(f"Brazil benchmark fetch failed ({exc}); using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
 
-        for issuer in issuers:
+        total = len(issuers)
+        for index, issuer in enumerate(issuers, start=1):
+            log.step(f"({index}/{total}) {issuer.ticker} — {issuer.issuer}")
             try:
                 equity_security = f"{issuer.ticker} US Equity"
                 cds_security = cds_ticker(issuer.ticker)
@@ -258,6 +270,11 @@ class BloombergSource:
                         else None
                     ),
                 }
+                if fields["cds_5y_bps"] is not None:
+                    log.trace(f"{issuer.ticker}: 5Y CDS {fields['cds_5y_bps']:.1f} bps")
+                else:
+                    log.trace(f"{issuer.ticker}: no CDS quote")
+
                 bond_note = None
                 try:
                     candidates, chain_len = self._bond_candidates(session, issuer.ticker)
@@ -273,9 +290,16 @@ class BloombergSource:
                                 f"; sample candidate: crncy={sample.get('crncy')!r},"
                                 f" rank={sample.get('payment_rank')!r}, maturity={sample.get('maturity')}"
                             )
+                        log.warn(f"{issuer.ticker}: {bond_note}")
+                    else:
+                        log.trace(
+                            f"{issuer.ticker}: bond {bond.get('security')} "
+                            f"(z-spread {bond.get('z_spread_bps')}, {chain_len} chain items, {len(candidates)} resolved)"
+                        )
                 except Exception as exc:  # noqa: BLE001 — bond discovery must not drop good CDS/equity data
                     bond = None
                     bond_note = f"bond discovery failed: {exc}"
+                    log.warn(f"{issuer.ticker}: {bond_note}")
                 credit = credit_from_fields(issuer.ticker, fields, bond)
                 if bond_note is not None:
                     credit.quality_notes.append(bond_note)
@@ -284,11 +308,19 @@ class BloombergSource:
                 spread_security = cds_security if credit.cds_5y_bps is not None else credit.bond.security
                 instrument = "cds" if credit.cds_5y_bps is not None else "bond"
                 if spread_security is not None:
-                    for date, value in self._spread_history(session, spread_security, as_of.date()):
+                    points = self._spread_history(session, spread_security, as_of.date())
+                    log.trace(f"{issuer.ticker}: {len(points)} history points via {instrument}")
+                    for date, value in points:
                         history.append(HistoryPoint(issuer.ticker, date, float(value), instrument))
+                else:
+                    log.trace(f"{issuer.ticker}: no spread instrument for history")
             except Exception as exc:  # noqa: BLE001 — one bad issuer must not kill the run
                 failures[issuer.ticker] = str(exc)
+                log.error(f"{issuer.ticker}: {exc}")
 
+        ok = len(credits)
+        summary = f"fetched {ok}/{total} issuers, {len(history)} history points, {len(failures)} failure(s)"
+        (log.success if not failures else log.warn)(summary)
         return FetchResult(
             as_of=as_of, source=self.name, issuers=credits,
             history=history, brazil=brazil, failures=failures,

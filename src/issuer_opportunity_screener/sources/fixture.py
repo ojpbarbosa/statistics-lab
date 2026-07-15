@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from issuer_opportunity_screener.log import get_logger
 from issuer_opportunity_screener.sources.base import (
     BondSnapshot,
     BrazilBenchmark,
@@ -17,6 +18,8 @@ from issuer_opportunity_screener.sources.base import (
     IssuerCredit,
     UniverseIssuer,
 )
+
+log = get_logger("fixture")
 
 FIXTURE_BRAZIL = BrazilBenchmark(cds_5y_bps=180.0, z_spread_bps=195.0, rating_sp="BB")
 FIXTURE_AS_OF = dt.datetime(2026, 7, 15, 12, 0, 0)
@@ -29,6 +32,7 @@ class FixtureSource:
     name = "fixture"
 
     def fetch(self, issuers: list[UniverseIssuer]) -> FetchResult:
+        log.step(f"generating deterministic synthetic data for {len(issuers)} issuers")
         credits: list[IssuerCredit] = []
         history: list[HistoryPoint] = []
         failures: dict[str, str] = {}

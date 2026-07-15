@@ -29,6 +29,12 @@ poetry run streamlit run src/issuer_opportunity_screener/app.py
 | `IOS_SOURCE` | (unset → live Bloomberg) | `fixture` switches Refresh to synthetic data |
 | `IOS_BB_HOST` | `localhost` | Bloomberg API host (e.g. a remote Terminal PC or B-PIPE endpoint) |
 | `IOS_BB_PORT` | `8194` | Bloomberg API port |
+| `IOS_LOG_LEVEL` | `step` | Terminal log verbosity: `trace`, `step`, `info`, `warn`, `error` (`success` logs at `info` rank) |
+
+Logs go to stderr as `{timestamp} [scope] <level> {message}` with ANSI colors
+(auto-disabled when not a TTY or when `NO_COLOR` is set; `IOS_FORCE_COLOR=1`
+overrides). Use `IOS_LOG_LEVEL=trace` to watch every issuer's CDS, bond
+selection, and history fetch during a refresh.
 
 ## Layout
 
