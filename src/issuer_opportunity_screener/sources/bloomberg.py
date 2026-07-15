@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 
 from issuer_opportunity_screener.log import get_logger
 from issuer_opportunity_screener.sources.base import (
@@ -52,6 +53,20 @@ def chain_security(item) -> str:
     """BOND_CHAIN identifiers come back without a yellow key; refdata needs one."""
     security = str(item).strip()
     return security if security.endswith(YELLOW_KEYS) else f"{security} Corp"
+
+
+def parsekeyable(instrument_result) -> str:
+    """//blp/instruments results end in '<corp>'-style keys; refdata wants ' Corp'."""
+    security = str(instrument_result).strip()
+    match = re.search(r"<(\w+)>$", security)
+    if match:
+        security = f"{security[: match.start()].rstrip()} {match.group(1).capitalize()}"
+    return security
+
+
+def security_matches_ticker(security: str, ticker: str) -> bool:
+    """Keep only lookup results that belong to the issuer's credit family."""
+    return security.upper().startswith(f"{ticker.upper()} ")
 
 
 def cds_ticker(issuer_ticker: str) -> str:
@@ -283,14 +298,18 @@ class BloombergSource:
                     log.trace(f"{issuer.ticker}: 5Y CDS {fields['cds_5y_bps']:.1f} bps")
                 else:
                     log.trace(f"{issuer.ticker}: no CDS quote")
+                log.trace(
+                    f"{issuer.ticker}: raw ratings moody={fields['rating_moody']!r} "
+                    f"sp={fields['rating_sp']!r} fitch={fields['rating_fitch']!r}"
+                )
 
                 bond_note = None
                 try:
-                    candidates, chain_len = self._bond_candidates(session, equity_security)
+                    candidates, discovered = self._bond_candidates(session, equity_security, issuer.ticker)
                     bond = select_bond(candidates, as_of=as_of.date())
                     if bond is None:
                         bond_note = (
-                            f"bond discovery: {chain_len} chain items, "
+                            f"bond discovery: {discovered} securities discovered, "
                             f"{len(candidates)} resolved via refdata, 0 eligible (USD Sr Unsecured 3-10y)"
                         )
                         if candidates:
@@ -303,7 +322,7 @@ class BloombergSource:
                     else:
                         log.trace(
                             f"{issuer.ticker}: bond {bond.get('security')} "
-                            f"(z-spread {bond.get('z_spread_bps')}, {chain_len} chain items, {len(candidates)} resolved)"
+                            f"(z-spread {bond.get('z_spread_bps')}, {discovered} discovered, {len(candidates)} resolved)"
                         )
                 except Exception as exc:  # noqa: BLE001 — bond discovery must not drop good CDS/equity data
                     bond = None
@@ -335,17 +354,48 @@ class BloombergSource:
             history=history, brazil=brazil, failures=failures,
         )
 
-    def _bond_candidates(self, session, equity_security: str) -> tuple[list[dict], int]:
-        """Discover the issuer's bonds via BOND_CHAIN BDS, then pull BOND_FIELDS.
+    def _instrument_lookup(self, session, ticker: str) -> list[str]:
+        """Search //blp/instruments for the issuer's corp securities."""
+        import blpapi
 
-        Returns (candidates, chain_length) so callers can report where
+        if not session.openService("//blp/instruments"):
+            return []
+        service = session.getService("//blp/instruments")
+        request = service.createRequest("instrumentListRequest")
+        request.set("query", ticker)
+        request.set("yellowKeyFilter", "YK_FILTER_CORP")
+        request.set("maxResults", 200)
+        session.sendRequest(request)
+        results: list[str] = []
+        while True:
+            event = session.nextEvent(30_000)
+            for msg in event:
+                if not msg.hasElement("results"):
+                    continue
+                rows = msg.getElement("results")
+                for i in range(rows.numValues()):
+                    row = rows.getValueAsElement(i)
+                    security = parsekeyable(row.getElementAsString("security"))
+                    if security_matches_ticker(security, ticker):
+                        results.append(security)
+            if event.eventType() == blpapi.Event.RESPONSE:
+                break
+        return results
+
+    def _bond_candidates(self, session, equity_security: str, ticker: str) -> tuple[list[dict], int]:
+        """Discover the issuer's bonds: BOND_CHAIN first, //blp/instruments fallback.
+
+        Returns (candidates, discovered_count) so callers can report where
         discovery thinned out.
         """
         chain_rows = self._reference_fields(session, [equity_security], ["BOND_CHAIN"])
         chain = chain_rows.get(equity_security, {}).get("BOND_CHAIN") or []
         securities = [chain_security(item) for item in chain][:50]
         if not securities:
-            return [], len(chain)
+            log.trace(f"{ticker}: BOND_CHAIN empty; falling back to //blp/instruments lookup")
+            securities = self._instrument_lookup(session, ticker)[:50]
+        if not securities:
+            return [], 0
         rows = self._reference_fields(session, securities, BOND_FIELDS)
         candidates = []
         for security, values in rows.items():
@@ -361,4 +411,4 @@ class BloombergSource:
                     "coupon": values.get("CPN"),
                 }
             )
-        return candidates, len(chain)
+        return candidates, len(securities)

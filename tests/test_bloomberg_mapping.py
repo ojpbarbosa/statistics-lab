@@ -211,3 +211,20 @@ def test_issuer_securities_overrides_win():
         equity_ticker="ABI BB Equity", cds_ticker="ABIBB CDS EUR SR 5Y D14 Corp",
     )
     assert issuer_securities(issuer) == ("ABI BB Equity", "ABIBB CDS EUR SR 5Y D14 Corp")
+
+
+def test_parsekeyable_converts_instrument_result_suffix():
+    from issuer_opportunity_screener.sources.bloomberg import parsekeyable
+
+    assert parsekeyable("AMD 4.393 06/01/46<corp>") == "AMD 4.393 06/01/46 Corp"
+    assert parsekeyable("GM 5.4 04/01/48<Corp>") == "GM 5.4 04/01/48 Corp"
+    assert parsekeyable("PETBRA 6.85 06/05/2115 Corp") == "PETBRA 6.85 06/05/2115 Corp"
+    assert parsekeyable(" T 3.5 09/15/53<corp> ") == "T 3.5 09/15/53 Corp"
+
+
+def test_security_matches_ticker():
+    from issuer_opportunity_screener.sources.bloomberg import security_matches_ticker
+
+    assert security_matches_ticker("AMD 4.393 06/01/46 Corp", "AMD") is True
+    assert security_matches_ticker("AMDX 5 01/01/30 Corp", "AMD") is False
+    assert security_matches_ticker("GM Financial 5.4 04/01/48 Corp", "GM") is True
