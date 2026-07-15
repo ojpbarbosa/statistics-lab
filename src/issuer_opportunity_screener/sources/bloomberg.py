@@ -35,6 +35,22 @@ REFDATA_FIELDS = [
 BOND_FIELDS = ["CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "YAS_ZSPREAD", "PX_LAST", "CPN"]
 
 
+YELLOW_KEYS = (" Corp", " Govt", " Mtge", " Muni", " Pfd", " Equity", " Index", " Curncy", " Comdty")
+
+
+def as_date(value) -> dt.date | None:
+    """blpapi returns datetime.datetime or datetime.date depending on element type."""
+    if value is None:
+        return None
+    return value.date() if isinstance(value, dt.datetime) else value
+
+
+def chain_security(item) -> str:
+    """BOND_CHAIN identifiers come back without a yellow key; refdata needs one."""
+    security = str(item).strip()
+    return security if security.endswith(YELLOW_KEYS) else f"{security} Corp"
+
+
 def cds_ticker(issuer_ticker: str) -> str:
     return f"{issuer_ticker} CDS USD SR 5Y D14 Corp"
 
@@ -191,7 +207,7 @@ class BloombergSource:
                     row = field_data.getValueAsElement(i)
                     if row.hasElement("PX_LAST"):
                         points.append(
-                            (row.getElementAsDatetime("date").date(), row.getElementAsFloat("PX_LAST"))
+                            (as_date(row.getElementAsDatetime("date")), row.getElementAsFloat("PX_LAST"))
                         )
             if event.eventType() == blpapi.Event.RESPONSE:
                 break
@@ -242,16 +258,27 @@ class BloombergSource:
                         else None
                     ),
                 }
+                bond_note = None
                 try:
-                    bond = select_bond(self._bond_candidates(session, issuer.ticker), as_of=as_of.date())
+                    candidates, chain_len = self._bond_candidates(session, issuer.ticker)
+                    bond = select_bond(candidates, as_of=as_of.date())
+                    if bond is None:
+                        bond_note = (
+                            f"bond discovery: {chain_len} chain items, "
+                            f"{len(candidates)} resolved via refdata, 0 eligible (USD Sr Unsecured 3-10y)"
+                        )
+                        if candidates:
+                            sample = candidates[0]
+                            bond_note += (
+                                f"; sample candidate: crncy={sample.get('crncy')!r},"
+                                f" rank={sample.get('payment_rank')!r}, maturity={sample.get('maturity')}"
+                            )
                 except Exception as exc:  # noqa: BLE001 — bond discovery must not drop good CDS/equity data
                     bond = None
-                    bond_discovery_error = exc
-                else:
-                    bond_discovery_error = None
+                    bond_note = f"bond discovery failed: {exc}"
                 credit = credit_from_fields(issuer.ticker, fields, bond)
-                if bond_discovery_error is not None:
-                    credit.quality_notes.append(f"bond discovery failed: {bond_discovery_error}")
+                if bond_note is not None:
+                    credit.quality_notes.append(bond_note)
                 credits.append(credit)
 
                 spread_security = cds_security if credit.cds_5y_bps is not None else credit.bond.security
@@ -267,27 +294,30 @@ class BloombergSource:
             history=history, brazil=brazil, failures=failures,
         )
 
-    def _bond_candidates(self, session, issuer_ticker: str) -> list[dict]:
-        """Discover the issuer's bonds via BOND_CHAIN BDS, then pull BOND_FIELDS."""
+    def _bond_candidates(self, session, issuer_ticker: str) -> tuple[list[dict], int]:
+        """Discover the issuer's bonds via BOND_CHAIN BDS, then pull BOND_FIELDS.
+
+        Returns (candidates, chain_length) so callers can report where
+        discovery thinned out.
+        """
         chain_rows = self._reference_fields(session, [f"{issuer_ticker} US Equity"], ["BOND_CHAIN"])
         chain = chain_rows.get(f"{issuer_ticker} US Equity", {}).get("BOND_CHAIN") or []
-        securities = [str(item) for item in chain][:50]
+        securities = [chain_security(item) for item in chain][:50]
         if not securities:
-            return []
+            return [], len(chain)
         rows = self._reference_fields(session, securities, BOND_FIELDS)
         candidates = []
         for security, values in rows.items():
-            maturity = values.get("MATURITY")
             candidates.append(
                 {
                     "security": security,
                     "crncy": values.get("CRNCY"),
                     "payment_rank": values.get("PAYMENT_RANK"),
-                    "maturity": maturity.date() if hasattr(maturity, "date") else maturity,
+                    "maturity": as_date(values.get("MATURITY")),
                     "amt_outstanding": values.get("AMT_OUTSTANDING"),
                     "z_spread_bps": values.get("YAS_ZSPREAD"),
                     "last_price": values.get("PX_LAST"),
                     "coupon": values.get("CPN"),
                 }
             )
-        return candidates
+        return candidates, len(chain)

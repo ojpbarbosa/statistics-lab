@@ -173,3 +173,22 @@ def test_bloomberg_source_defaults_without_env(monkeypatch):
     source = BloombergSource()
     assert source.host == "localhost"
     assert source.port == 8194
+
+
+def test_as_date_normalizes_datetime_and_passes_date_through():
+    import datetime as dtmod
+
+    from issuer_opportunity_screener.sources.bloomberg import as_date
+
+    assert as_date(dtmod.datetime(2026, 7, 15, 12, 30)) == dtmod.date(2026, 7, 15)
+    assert as_date(dtmod.date(2026, 7, 15)) == dtmod.date(2026, 7, 15)
+    assert as_date(None) is None
+
+
+def test_chain_security_appends_yellow_key_only_when_missing():
+    from issuer_opportunity_screener.sources.bloomberg import chain_security
+
+    assert chain_security("BACR 4.375 01/12/26") == "BACR 4.375 01/12/26 Corp"
+    assert chain_security("EJ1234567 Corp") == "EJ1234567 Corp"
+    assert chain_security("  XS0055498413 ") == "XS0055498413 Corp"
+    assert chain_security("BRAZIL 5 01/27/45 Govt") == "BRAZIL 5 01/27/45 Govt"
