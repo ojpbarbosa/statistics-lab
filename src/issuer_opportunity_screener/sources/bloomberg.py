@@ -31,10 +31,53 @@ BRAZIL_FALLBACK = BrazilBenchmark(cds_5y_bps=180.0, z_spread_bps=None, rating_sp
 TENOR_MIN_YEARS = 3.0
 TENOR_MAX_YEARS = 10.0
 REFDATA_FIELDS = [
-    "PX_LAST", "RTG_MOODY", "RTG_SP", "RTG_FITCH",
+    "PX_LAST",
     "CHG_PCT_3M", "CHG_PCT_1YR", "TOT_BUY_REC", "TOT_SELL_REC", "TOT_HOLD_REC",
 ]
 BOND_FIELDS = ["CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "YAS_ZSPREAD", "PX_LAST", "CPN"]
+BOND_HISTORY_FIELD = "Z_SPRD_MID"  # bond PX_LAST is a price, not a spread
+RATING_FIELD_TO_AGENCY = {
+    "RTG_MOODY": "moody",
+    "RTG_SP": "sp",
+    "RTG_FITCH": "fitch",
+    "RTG_DBRS": "dbrs",
+    "RTG_KBRA": "kbra",
+    "BB_COMPOSITE": "composite",
+}
+RATING_FIELDS = list(RATING_FIELD_TO_AGENCY)
+DEFAULT_BOND_CURRENCIES = ("USD",)
+
+
+def merge_ratings(rows_by_security: dict[str, dict], order: list[str]) -> dict[str, str]:
+    """First non-empty value per agency across the securities in `order`
+    (typically bond, then CDS, then equity), provider-agnostic."""
+    merged: dict[str, str] = {}
+    for security in order:
+        values = rows_by_security.get(security, {})
+        for field, agency in RATING_FIELD_TO_AGENCY.items():
+            value = values.get(field)
+            if agency not in merged and isinstance(value, str) and value.strip():
+                merged[agency] = value.strip()
+    return merged
+
+
+def split_cds_curve(securities: list[str]) -> tuple[list[str], list[str]]:
+    """The //blp/instruments corp lookup mixes cash bonds with the CDS curve;
+    split them so CDS contracts never enter bond eligibility."""
+    bonds = [s for s in securities if " CDS " not in s.upper()]
+    curve = [s for s in securities if " CDS " in s.upper()]
+    return bonds, curve
+
+
+def pick_cds_5y(curve: list[str], ticker: str, currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES) -> str | None:
+    """Exact 5Y D14 point from a discovered CDS curve, preferred currency
+    first. Interpolated tenors such as 1Y6M or 5Y3M never match."""
+    for currency in currencies:
+        pattern = re.compile(rf"^{re.escape(ticker)} CDS {currency} SR 5Y D14 Corp$", re.IGNORECASE)
+        for security in curve:
+            if pattern.match(security.strip()):
+                return security.strip()
+    return None
 
 
 log = get_logger("bloomberg")
@@ -128,7 +171,6 @@ def rank_is_senior_unsecured(rank: str | None) -> bool:
 
 
 _CANDIDATE_DATA_KEYS = ("crncy", "payment_rank", "maturity", "z_spread_bps", "last_price", "coupon")
-DEFAULT_BOND_CURRENCIES = ("USD",)
 
 
 def bond_currencies_from_env() -> tuple[str, ...]:
@@ -175,7 +217,7 @@ def rejection_summary(
     tenor_min: float = TENOR_MIN_YEARS,
     tenor_max: float = TENOR_MAX_YEARS,
 ) -> str:
-    """Per-reason counts plus the most common rejected ranks — makes a
+    """Per-reason counts plus the most common rejected ranks, so a
     zero-eligible run self-diagnosing from the quality notes alone."""
     from collections import Counter
 
@@ -301,21 +343,23 @@ class BloombergSource:
                         el = field_data.getElement(j)
                         try:
                             values[str(el.name())] = flatten_field_element(el)
-                        except Exception:  # noqa: BLE001 — one bad field must not kill the request
+                        except Exception:  # noqa: BLE001: one bad field must not kill the request
                             continue
                     out[security] = values
             if event.eventType() == blpapi.Event.RESPONSE:
                 break
         return out
 
-    def _spread_history(self, session, security: str, as_of: dt.date) -> list[tuple[dt.date, float]]:
-        """HistoricalDataRequest PX_LAST, weekly, 1y back -> [(date, value)]."""
+    def _spread_history(self, session, security: str, as_of: dt.date, field: str = "PX_LAST") -> list[tuple[dt.date, float]]:
+        """HistoricalDataRequest for one field, weekly, 1y back -> [(date, value)].
+        CDS curves quote spread as PX_LAST; bonds need Z_SPRD_MID (their
+        PX_LAST is a price, which must never enter spread history)."""
         import blpapi
 
         service = session.getService("//blp/refdata")
         request = service.createRequest("HistoricalDataRequest")
         request.getElement("securities").appendValue(security)
-        request.getElement("fields").appendValue("PX_LAST")
+        request.getElement("fields").appendValue(field)
         request.set("startDate", (as_of - dt.timedelta(days=365)).strftime("%Y%m%d"))
         request.set("endDate", as_of.strftime("%Y%m%d"))
         request.set("periodicitySelection", "WEEKLY")
@@ -329,9 +373,9 @@ class BloombergSource:
                 field_data = msg.getElement("securityData").getElement("fieldData")
                 for i in range(field_data.numValues()):
                     row = field_data.getValueAsElement(i)
-                    if row.hasElement("PX_LAST"):
+                    if row.hasElement(field):
                         points.append(
-                            (as_date(row.getElementAsDatetime("date")), row.getElementAsFloat("PX_LAST"))
+                            (as_date(row.getElementAsDatetime("date")), row.getElementAsFloat(field))
                         )
             if event.eventType() == blpapi.Event.RESPONSE:
                 break
@@ -361,13 +405,13 @@ class BloombergSource:
                 log.info(f"Brazil 5Y CDS: {brazil.cds_5y_bps:.1f} bps")
             else:
                 log.warn(f"Brazil benchmark quote missing; using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
-        except Exception as exc:  # noqa: BLE001 — benchmark failure must not kill the run
+        except Exception as exc:  # noqa: BLE001: benchmark failure must not kill the run
             failures["__BRAZIL__"] = f"benchmark fetch failed, using fallback: {exc}"
             log.error(f"Brazil benchmark fetch failed ({exc}); using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
 
         total = len(issuers)
         for index, issuer in enumerate(issuers, start=1):
-            log.step(f"({index}/{total}) {issuer.ticker} — {issuer.issuer}")
+            log.step(f"({index}/{total}) {issuer.ticker}: {issuer.issuer}")
             try:
                 equity_security, cds_security = issuer_securities(issuer)
                 rows = self._reference_fields(session, [equity_security, cds_security], REFDATA_FIELDS)
@@ -380,9 +424,6 @@ class BloombergSource:
                 fields = {
                     "cds_5y_bps": float(cds_row["PX_LAST"]) if "PX_LAST" in cds_row else None,
                     "cds_liquidity_score": 100.0 if "PX_LAST" in cds_row else None,
-                    "rating_moody": equity_row.get("RTG_MOODY"),
-                    "rating_sp": equity_row.get("RTG_SP"),
-                    "rating_fitch": equity_row.get("RTG_FITCH"),
                     "equity_ticker": equity_security if "PX_LAST" in equity_row else None,
                     "px_chg_3m_pct": equity_row.get("CHG_PCT_3M"),
                     "px_chg_12m_pct": equity_row.get("CHG_PCT_1YR"),
@@ -392,18 +433,27 @@ class BloombergSource:
                         else None
                     ),
                 }
-                if fields["cds_5y_bps"] is not None:
-                    log.trace(f"{issuer.ticker}: 5Y CDS {fields['cds_5y_bps']:.1f} bps")
+
+                bond_securities, cds_curve = self._discover_corp_securities(session, equity_security, issuer.ticker)
+
+                if fields["cds_5y_bps"] is None and cds_curve:
+                    fallback = pick_cds_5y(cds_curve, issuer.ticker, self.currencies)
+                    if fallback and fallback != cds_security:
+                        fallback_row = self._reference_fields(session, [fallback], ["PX_LAST"]).get(fallback, {})
+                        if "PX_LAST" in fallback_row:
+                            cds_security = fallback
+                            fields["cds_5y_bps"] = float(fallback_row["PX_LAST"])
+                            fields["cds_liquidity_score"] = 100.0
+                            log.info(f"{issuer.ticker}: CDS resolved via instruments lookup: {fallback}")
+                cds_resolved = fields["cds_5y_bps"] is not None
+                if cds_resolved:
+                    log.trace(f"{issuer.ticker}: 5Y CDS {fields['cds_5y_bps']:.1f} bps via {cds_security}")
                 else:
-                    log.trace(f"{issuer.ticker}: no CDS quote")
-                log.trace(
-                    f"{issuer.ticker}: raw ratings moody={fields['rating_moody']!r} "
-                    f"sp={fields['rating_sp']!r} fitch={fields['rating_fitch']!r}"
-                )
+                    log.trace(f"{issuer.ticker}: no CDS quote ({len(cds_curve)} curve items discovered)")
 
                 bond_note = None
                 try:
-                    candidates, discovered = self._bond_candidates(session, equity_security, issuer.ticker)
+                    candidates = self._bond_refdata(session, bond_securities, issuer.ticker)
                     bond = select_bond(
                         candidates,
                         as_of=as_of.date(),
@@ -413,7 +463,8 @@ class BloombergSource:
                     )
                     if bond is None:
                         bond_note = (
-                            f"bond discovery: {discovered} securities discovered, 0 selected — "
+                            f"bond discovery: {len(bond_securities)} bond securities "
+                            f"({len(cds_curve)} CDS curve items excluded), 0 selected: "
                             f"{rejection_summary(candidates, as_of.date(), self.currencies, self.tenor_min, self.tenor_max)}"
                         )
                         log.warn(f"{issuer.ticker}: {bond_note}")
@@ -425,27 +476,52 @@ class BloombergSource:
                     else:
                         log.trace(
                             f"{issuer.ticker}: bond {bond.get('security')} "
-                            f"(z-spread {bond.get('z_spread_bps')}, {discovered} discovered, {len(candidates)} resolved)"
+                            f"(z-spread {bond.get('z_spread_bps')}, {len(bond_securities)} discovered, {len(candidates)} resolved)"
                         )
-                except Exception as exc:  # noqa: BLE001 — bond discovery must not drop good CDS/equity data
+                except Exception as exc:  # noqa: BLE001: bond discovery must not drop good CDS/equity data
                     bond = None
                     bond_note = f"bond discovery failed: {exc}"
                     log.warn(f"{issuer.ticker}: {bond_note}")
+
+                rating_securities = [
+                    security
+                    for security in (
+                        (bond or {}).get("security"),
+                        cds_security if cds_resolved else None,
+                        equity_security if equity_row else None,
+                    )
+                    if security
+                ]
+                ratings: dict[str, str] = {}
+                if rating_securities:
+                    ratings = merge_ratings(
+                        self._reference_fields(session, rating_securities, RATING_FIELDS), rating_securities
+                    )
+                log.trace(f"{issuer.ticker}: ratings {ratings or 'none resolved'}")
+                fields["rating_moody"] = ratings.get("moody")
+                fields["rating_sp"] = ratings.get("sp")
+                fields["rating_fitch"] = ratings.get("fitch")
+
                 credit = credit_from_fields(issuer.ticker, fields, bond)
+                credit.ratings = ratings
+                credit.cds_security = cds_security if cds_resolved else None
+                if not ratings:
+                    credit.quality_notes.append("no agency ratings resolved from bond, CDS, or equity")
                 if bond_note is not None:
                     credit.quality_notes.append(bond_note)
                 credits.append(credit)
 
                 spread_security = cds_security if credit.cds_5y_bps is not None else credit.bond.security
                 instrument = "cds" if credit.cds_5y_bps is not None else "bond"
+                history_field = "PX_LAST" if instrument == "cds" else BOND_HISTORY_FIELD
                 if spread_security is not None:
-                    points = self._spread_history(session, spread_security, as_of.date())
-                    log.trace(f"{issuer.ticker}: {len(points)} history points via {instrument}")
+                    points = self._spread_history(session, spread_security, as_of.date(), field=history_field)
+                    log.trace(f"{issuer.ticker}: {len(points)} history points via {instrument} ({history_field})")
                     for date, value in points:
                         history.append(HistoryPoint(issuer.ticker, date, float(value), instrument))
                 else:
                     log.trace(f"{issuer.ticker}: no spread instrument for history")
-            except Exception as exc:  # noqa: BLE001 — one bad issuer must not kill the run
+            except Exception as exc:  # noqa: BLE001: one bad issuer must not kill the run
                 failures[issuer.ticker] = str(exc)
                 log.error(f"{issuer.ticker}: {exc}")
 
@@ -485,35 +561,37 @@ class BloombergSource:
                 break
         return results
 
-    def _bond_candidates(self, session, equity_security: str, ticker: str) -> tuple[list[dict], int]:
-        """Discover the issuer's bonds: BOND_CHAIN first, //blp/instruments fallback.
-
-        Returns (candidates, discovered_count) so callers can report where
-        discovery thinned out.
-        """
+    def _discover_corp_securities(self, session, equity_security: str, ticker: str) -> tuple[list[str], list[str]]:
+        """Discover the issuer's corp securities and split (bonds, cds_curve).
+        BOND_CHAIN first; //blp/instruments fallback (which mixes in the CDS
+        curve, hence the split)."""
         chain_rows = self._reference_fields(session, [equity_security], ["BOND_CHAIN"])
         chain = chain_rows.get(equity_security, {}).get("BOND_CHAIN") or []
         securities = [chain_security(item) for item in chain]
         if not securities:
             log.trace(f"{ticker}: BOND_CHAIN empty; falling back to //blp/instruments lookup")
             securities = self._instrument_lookup(session, ticker)
+        return split_cds_curve(securities)
+
+    def _bond_refdata(self, session, securities: list[str], ticker: str) -> list[dict]:
+        """Reference data for discovered bond securities, in polite batches."""
         if not securities:
-            return [], 0
+            return []
         rows: dict[str, dict] = {}
-        for start in range(0, len(securities), 100):  # refdata in polite batches
+        for start in range(0, len(securities), 100):
             rows.update(self._reference_fields(session, securities[start : start + 100], BOND_FIELDS))
         candidates = []
         for security, values in rows.items():
-            candidates.append(
-                {
-                    "security": security,
-                    "crncy": values.get("CRNCY"),
-                    "payment_rank": values.get("PAYMENT_RANK"),
-                    "maturity": as_date(values.get("MATURITY")),
-                    "amt_outstanding": values.get("AMT_OUTSTANDING"),
-                    "z_spread_bps": values.get("YAS_ZSPREAD"),
-                    "last_price": values.get("PX_LAST"),
-                    "coupon": values.get("CPN"),
-                }
-            )
-        return candidates, len(securities)
+            candidate = {
+                "security": security,
+                "crncy": values.get("CRNCY"),
+                "payment_rank": values.get("PAYMENT_RANK"),
+                "maturity": as_date(values.get("MATURITY")),
+                "amt_outstanding": values.get("AMT_OUTSTANDING"),
+                "z_spread_bps": values.get("YAS_ZSPREAD"),
+                "last_price": values.get("PX_LAST"),
+                "coupon": values.get("CPN"),
+            }
+            log.trace(f"{ticker}: bond candidate {candidate}")
+            candidates.append(candidate)
+        return candidates

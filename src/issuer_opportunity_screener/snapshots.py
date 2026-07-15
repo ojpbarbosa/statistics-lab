@@ -12,7 +12,7 @@ from issuer_opportunity_screener.sources.base import FetchResult, UniverseIssuer
 SNAPSHOT_FILE = "snapshot.parquet"
 HISTORY_FILE = "history.parquet"
 MANIFEST_FILE = "manifest.json"
-COVERAGE_COLUMNS = ["cds_5y_bps", "bond_z_spread_bps", "bond_last_price", "rating_sp", "equity_ticker"]
+COVERAGE_COLUMNS = ["cds_5y_bps", "bond_z_spread_bps", "bond_last_price", "rating_sp", "ratings_all", "equity_ticker"]
 
 
 @dataclass
@@ -37,6 +37,7 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
             "internal_rating": u.internal_rating,
             "cds_5y_bps": None,
             "cds_liquidity_score": None,
+            "cds_security": None,
             "bond_security": None,
             "bond_z_spread_bps": None,
             "bond_last_price": None,
@@ -45,6 +46,7 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
             "rating_moody": None,
             "rating_sp": None,
             "rating_fitch": None,
+            "ratings_all": None,
             "equity_ticker": None,
             "px_chg_3m_pct": None,
             "px_chg_12m_pct": None,
@@ -56,6 +58,7 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
             row.update(
                 cds_5y_bps=credit.cds_5y_bps,
                 cds_liquidity_score=credit.cds_liquidity_score,
+                cds_security=credit.cds_security,
                 bond_security=credit.bond.security,
                 bond_z_spread_bps=credit.bond.z_spread_bps,
                 bond_last_price=credit.bond.last_price,
@@ -64,6 +67,7 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
                 rating_moody=credit.rating_moody,
                 rating_sp=credit.rating_sp,
                 rating_fitch=credit.rating_fitch,
+                ratings_all=json.dumps(credit.ratings) if credit.ratings else None,
                 equity_ticker=credit.equity.equity_ticker,
                 px_chg_3m_pct=credit.equity.price_change_3m_pct,
                 px_chg_12m_pct=credit.equity.price_change_12m_pct,

@@ -319,3 +319,59 @@ def test_rejection_summary_names_allowed_currencies():
 
     summary = rejection_summary([bond("GBP1", 5.0, crncy="GBP")], as_of=AS_OF, currencies=("USD", "EUR"))
     assert "1 non-USD/EUR" in summary
+
+
+def test_split_cds_curve_separates_contracts_from_bonds():
+    from issuer_opportunity_screener.sources.bloomberg import split_cds_curve
+
+    mixed = [
+        "AMD CDS USD SR 5Y D14 Corp",
+        "AMD 4.393 06/01/46 Corp",
+        "AMD CDS USD SR 1Y6M D14 Corp",
+        "AMD 0 09/15/26 Corp",
+    ]
+    bonds, curve = split_cds_curve(mixed)
+    assert bonds == ["AMD 4.393 06/01/46 Corp", "AMD 0 09/15/26 Corp"]
+    assert curve == ["AMD CDS USD SR 5Y D14 Corp", "AMD CDS USD SR 1Y6M D14 Corp"]
+
+
+def test_pick_cds_5y_exact_tenor_only():
+    from issuer_opportunity_screener.sources.bloomberg import pick_cds_5y
+
+    curve = [
+        "AMD CDS USD SR 1Y6M D14 Corp",
+        "AMD CDS USD SR 5Y3M D14 Corp",
+        "AMD CDS USD SR 20Y D14 Corp",
+        "AMD CDS USD SR 5Y D14 Corp",
+    ]
+    assert pick_cds_5y(curve, "AMD") == "AMD CDS USD SR 5Y D14 Corp"
+    assert pick_cds_5y(curve[:3], "AMD") is None  # interpolated tenors never match
+    assert pick_cds_5y(curve, "INTC") is None  # wrong ticker never matches
+
+
+def test_pick_cds_5y_currency_preference():
+    from issuer_opportunity_screener.sources.bloomberg import pick_cds_5y
+
+    curve = ["VW CDS EUR SR 5Y D14 Corp", "VW CDS USD SR 5Y D14 Corp"]
+    assert pick_cds_5y(curve, "VW", ("USD", "EUR")) == "VW CDS USD SR 5Y D14 Corp"
+    assert pick_cds_5y(["VW CDS EUR SR 5Y D14 Corp"], "VW", ("USD", "EUR")) == "VW CDS EUR SR 5Y D14 Corp"
+    assert pick_cds_5y(["VW CDS EUR SR 5Y D14 Corp"], "VW") is None  # USD-only default
+
+
+def test_merge_ratings_prefers_earlier_securities():
+    from issuer_opportunity_screener.sources.bloomberg import merge_ratings
+
+    rows = {
+        "BOND Corp": {"RTG_MOODY": "Ba1", "BB_COMPOSITE": "BB+"},
+        "CDS Corp": {"RTG_SP": "BB", "RTG_MOODY": "Ba3"},
+        "EQ Equity": {"RTG_FITCH": "BB", "RTG_SP": "B+", "RTG_DBRS": "BB (high)"},
+    }
+    merged = merge_ratings(rows, ["BOND Corp", "CDS Corp", "EQ Equity"])
+    assert merged == {
+        "moody": "Ba1",  # bond wins over CDS
+        "composite": "BB+",
+        "sp": "BB",  # CDS wins over equity
+        "fitch": "BB",
+        "dbrs": "BB (high)",
+    }
+    assert merge_ratings({}, ["X"]) == {}

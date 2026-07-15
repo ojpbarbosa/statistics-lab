@@ -45,7 +45,7 @@ def test_edge_case_roles():
     assert len(hist3) == 8
     assert len(hist0) == 52
 
-    # role 4: fetch failure — absent from issuers, present in failures
+    # role 4: fetch failure, absent from issuers and present in failures
     assert "TICK4" not in by_ticker
     assert "TICK4" in result.failures
 

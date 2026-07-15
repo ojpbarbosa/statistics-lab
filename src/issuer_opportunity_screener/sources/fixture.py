@@ -52,6 +52,7 @@ class FixtureSource:
                 ticker=u.ticker,
                 cds_5y_bps=None if role == 1 else base,
                 cds_liquidity_score=None if role == 1 else 40.0 + (idx * 13) % 60,
+                cds_security=None if role == 1 else f"{u.ticker} CDS USD SR 5Y D14 Corp",
                 bond=BondSnapshot(
                     security=f"{u.ticker} 5.5 2031 Corp",
                     z_spread_bps=base + 15.0,
@@ -62,6 +63,7 @@ class FixtureSource:
                 rating_moody=_MOODY[rating],
                 rating_sp=rating,
                 rating_fitch=rating,
+                ratings={"moody": _MOODY[rating], "sp": rating, "fitch": rating, "composite": rating},
                 equity=(
                     EquityOverlay()
                     if role == 2

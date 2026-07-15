@@ -1,11 +1,11 @@
-"""Issuer Opportunity Screener — Streamlit dashboard.
+"""Issuer Opportunity Screener: Streamlit dashboard.
 
 Reads the latest snapshot under $IOS_DATA_DIR (default ./data), scores it
 in-memory, renders three tabs. Never talks to blpapi directly; the Refresh
 button runs the pipeline and falls back gracefully when Bloomberg is away.
 
 Visual language: terminal-dark surface, amber accent, and every spread
-anchored against the Brazil benchmark line — the product's one thesis.
+anchored against the Brazil benchmark line, the product's one thesis.
 """
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ SNAPSHOTS_ROOT = DATA_ROOT / "snapshots"
 ISSUER_COLOR = "#2287c7"  # validated for BOTH light and dark surfaces (dataviz six checks)
 BRAZIL_COLOR = "#bc8400"
 MUTED_COLOR = "#8a919c"  # neutral status for "not viable"; shape/legend carry identity
+BRAZIL_TICKER_HINT = "BRAZIL CDS USD SR 5Y D14 Corp"
 
 st.set_page_config(page_title="Issuer Opportunity Screener", layout="wide")
 st.markdown(
@@ -75,7 +76,7 @@ def sidebar(snapshot_dirs: list[Path]) -> Path | None:
                 st.success(f"New snapshot: {new_dir.name}")
                 snapshot_dirs = list_snapshots(SNAPSHOTS_ROOT)
             except BloombergUnavailable as exc:
-                st.warning(f"Bloomberg unavailable — staying on current snapshot. ({exc})")
+                st.warning(f"Bloomberg unavailable, staying on current snapshot. ({exc})")
             except FileExistsError:
                 st.warning("Snapshot for this timestamp already exists; nothing to do.")
             except UniverseError as exc:
@@ -196,15 +197,20 @@ def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
     if not view.empty:
         map_col, basket_col = st.columns((3, 2))
         with map_col:
-            st.markdown("##### Market map — score vs spread")
+            st.markdown("##### Market map: score vs spread")
             render_market_map(view)
         with basket_col:
             st.markdown("##### Baskets vs Brazil")
             render_basket_bar(view)
 
+    numeric_columns = [
+        "composite", "spread_vs_brazil_bps", "cds_5y_bps",
+        "bond_z_spread_bps", "bond_last_price", "recognition_score",
+    ]
     display = view.assign(
         rating_composite=view.rating_composite.fillna(""),
         internal_rating=view.internal_rating.fillna(""),
+        **{column: pd.to_numeric(view[column], errors="coerce") for column in numeric_columns},
     )
     st.dataframe(display, width="stretch", hide_index=True, column_config=SCREEN_COLUMNS, height=520)
     st.download_button(
@@ -289,15 +295,44 @@ def render_issuer_tab(snap: Snapshot, scores: list[IssuerScore]):
             "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
         },
     )
-    with st.expander("Signal detail"):
-        signals = pd.DataFrame(
-            [
-                {"block": b.name, "signal": s.name, "raw": s.raw, "score": s.score}
-                for b in score.blocks
-                for s in (b.signals or [])
-            ]
+    st.markdown(f"**Composite** = `{score.composite_detail}` (weights renormalize over blocks with data; tiers: A at 70, B at 50)")
+
+    st.subheader("Signal detail")
+    signals = pd.DataFrame(
+        [
+            {"block": b.name, "signal": s.name, "raw": s.raw, "score": s.score, "how it is computed": s.detail}
+            for b in score.blocks
+            for s in (b.signals or [])
+        ]
+    )
+    st.dataframe(
+        signals,
+        width="stretch",
+        hide_index=True,
+        height=int(38 * (len(signals) + 1.2)),
+        column_config={
+            "block": st.column_config.TextColumn("Block"),
+            "signal": st.column_config.TextColumn("Signal"),
+            "raw": st.column_config.NumberColumn("Raw", format="%.2f"),
+            "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
+            "how it is computed": st.column_config.TextColumn("How it is computed", width="large"),
+        },
+    )
+
+    st.subheader("Replicate on the terminal")
+    replication = [f"- Brazil benchmark: `{BRAZIL_TICKER_HINT}`, field `PX_LAST` = {snap.manifest['brazil']['cds_5y_bps']:.1f} bps"]
+    if pd.notna(getattr(row, "cds_security", None)):
+        replication.append(f"- 5Y CDS: `{row.cds_security}`, field `PX_LAST` (spread history: weekly `PX_LAST`, 1y back)")
+    if pd.notna(row.bond_security):
+        replication.append(
+            f"- Bond: `{row.bond_security}`, fields `YAS_ZSPREAD` (current z-spread), `PX_LAST` (price), "
+            f"`PAYMENT_RANK`, `MATURITY` via DES (spread history: weekly `Z_SPRD_MID`, 1y back)"
         )
-        st.dataframe(signals, width="stretch", hide_index=True)
+    ratings_raw = getattr(row, "ratings_all", None)
+    if isinstance(ratings_raw, str) and ratings_raw.strip():
+        replication.append(f"- Ratings as fetched (bond, then CDS, then equity): `{ratings_raw}`")
+    replication.append("- Viability rule: spread vs Brazil >= 0 bps, or >= -20 bps with a rating strictly stronger than Brazil")
+    st.markdown("\n".join(replication))
 
     if row.quality_notes:
         st.info(f"Data quality: {row.quality_notes}")
@@ -308,7 +343,7 @@ def render_quality_tab(snap: Snapshot):
     st.metric(
         "Snapshot",
         manifest["as_of"],
-        f'source: {manifest["source"]}' + (" — PARTIAL" if manifest["partial"] else ""),
+        f'source: {manifest["source"]}' + (" (PARTIAL)" if manifest["partial"] else ""),
         delta_color="inverse" if manifest["partial"] else "off",
     )
     st.subheader("Field coverage")
@@ -341,7 +376,7 @@ def main():
     snap = load_snapshot(chosen)
     st.sidebar.markdown(f"**Data as of:** {snap.manifest['as_of']}  \n**Source:** {snap.manifest['source']}")
     if snap.manifest["partial"]:
-        st.sidebar.warning(f"Partial snapshot — {len(snap.manifest['failures'])} issuer(s) failed.")
+        st.sidebar.warning(f"Partial snapshot: {len(snap.manifest['failures'])} issuer(s) failed.")
     st.caption(
         f"data as of {snap.manifest['as_of']} · source: {snap.manifest['source']}"
         + (" · partial snapshot" if snap.manifest["partial"] else "")
@@ -349,7 +384,7 @@ def main():
 
     scores = score_snapshot(snap)
     if not scores:
-        st.warning("No scorable issuers in this snapshot — check the Data quality tab.")
+        st.warning("No scorable issuers in this snapshot. Check the Data quality tab.")
         render_quality_tab(snap)
         return
     frame = screen_frame(snap, scores)

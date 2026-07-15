@@ -109,3 +109,24 @@ def test_block_score_mean_of_available():
     ]
     assert block_score(signals) == 50.0
     assert block_score([SignalScore("a", None, None)]) is None
+
+
+def test_normalize_rating_provider_agnostic():
+    assert normalize_rating("(P)Baa2") == "BBB"
+    assert normalize_rating("BB (high)") == "BB+"
+    assert normalize_rating("BB (low)") == "BB-"
+    assert normalize_rating("BBB *-") == "BBB"
+    assert normalize_rating("BBBu") == "BBB"
+    assert normalize_rating("AA (HIGH)") == "AA+"
+    assert normalize_rating("WD") is None
+
+
+def test_composite_rating_rank_any_mixed_providers():
+    from issuer_opportunity_screener.scoring import composite_rating_rank_any
+
+    ratings = {"moody": "Ba1", "sp": "BB", "dbrs": "BB (high)", "composite": "BB+"}
+    # ranks: Ba1=10, BB=11, BB (high)=10, BB+=10 -> median 10 -> BB+
+    assert composite_rating_rank_any(ratings) == 10
+    assert composite_rating_rank_any({}) is None
+    assert composite_rating_rank_any({"sp": "NR"}) is None
+    assert composite_rating_rank_any(None) is None

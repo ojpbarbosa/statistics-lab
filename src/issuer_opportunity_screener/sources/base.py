@@ -45,10 +45,12 @@ class IssuerCredit:
     ticker: str
     cds_5y_bps: float | None = None
     cds_liquidity_score: float | None = None  # 0-100 proxy
+    cds_security: str | None = None  # the resolved Bloomberg CDS handle
     bond: BondSnapshot = field(default_factory=BondSnapshot)
     rating_moody: str | None = None
     rating_sp: str | None = None
     rating_fitch: str | None = None
+    ratings: dict[str, str] = field(default_factory=dict)  # agency key -> raw value, any provider
     equity: EquityOverlay = field(default_factory=EquityOverlay)
     quality_notes: list[str] = field(default_factory=list)
 

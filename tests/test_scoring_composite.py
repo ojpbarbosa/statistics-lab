@@ -117,3 +117,24 @@ def test_screen_frame_empty_scores(snap):
         "bond_last_price", "rating_composite", "internal_rating",
         "recognition_score", "partial_data", "quality_notes",
     ]
+
+
+def test_signal_details_and_composite_detail_present(snap):
+    score = next(s for s in score_snapshot(snap) if s.ticker == "TICK0")
+    block1 = next(b for b in score.blocks if b.name == "Credit and Spread Attractiveness")
+    for signal in block1.signals:
+        assert signal.detail, f"missing detail for {signal.name}"
+    assert "weekly closes" in next(s for s in block1.signals if s.name == "history_percentile").detail
+    assert score.composite_detail.endswith(f"= {score.composite:.1f}")
+    assert "*" in score.composite_detail  # weighted terms are spelled out
+
+
+def test_ratings_all_flows_from_snapshot(snap):
+    row = snap.frame[snap.frame.ticker == "TICK0"].iloc[0]
+    assert row.ratings_all and "composite" in row.ratings_all
+    scores = {s.ticker: s for s in score_snapshot(snap)}
+    external = next(
+        sig for b in scores["TICK0"].blocks for sig in b.signals if sig.name == "external_rating"
+    )
+    assert external.score is not None
+    assert "median of" in external.detail
