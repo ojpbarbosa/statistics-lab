@@ -59,3 +59,22 @@ def test_empty_file_rejected(tmp_path):
 def test_internal_rating_kept_when_present(tmp_path):
     p = write(tmp_path, "A,TSLA,Brazil,Brazil,Energy,50,BB+\n")
     assert load_universe(p)[0].internal_rating == "BB+"
+
+
+def test_handle_overrides_default_to_none(tmp_path):
+    p = write(tmp_path, "A,TSLA,Brazil,Brazil,Energy,50,\n")
+    issuer = load_universe(p)[0]
+    assert issuer.equity_ticker is None
+    assert issuer.cds_ticker is None
+
+
+def test_handle_overrides_kept_when_present(tmp_path):
+    p = tmp_path / "universe.csv"
+    p.write_text(
+        "issuer,ticker,basket,country,sector,recognition_score,internal_rating,equity_ticker,cds_ticker\n"
+        "AB InBev,ABIBB,Brazil,Brazil,Energy,50,,ABI BB Equity,ABIBB CDS EUR SR 5Y D14 Corp\n",
+        encoding="utf-8",
+    )
+    issuer = load_universe(p)[0]
+    assert issuer.equity_ticker == "ABI BB Equity"
+    assert issuer.cds_ticker == "ABIBB CDS EUR SR 5Y D14 Corp"

@@ -192,3 +192,22 @@ def test_chain_security_appends_yellow_key_only_when_missing():
     assert chain_security("EJ1234567 Corp") == "EJ1234567 Corp"
     assert chain_security("  XS0055498413 ") == "XS0055498413 Corp"
     assert chain_security("BRAZIL 5 01/27/45 Govt") == "BRAZIL 5 01/27/45 Govt"
+
+
+def test_issuer_securities_derived_defaults():
+    from issuer_opportunity_screener.sources.bloomberg import issuer_securities
+    from issuer_opportunity_screener.universe import UniverseIssuer
+
+    issuer = UniverseIssuer("Tesla", "TSLA", "Brazil", "US", "Auto", 90.0)
+    assert issuer_securities(issuer) == ("TSLA US Equity", "TSLA CDS USD SR 5Y D14 Corp")
+
+
+def test_issuer_securities_overrides_win():
+    from issuer_opportunity_screener.sources.bloomberg import issuer_securities
+    from issuer_opportunity_screener.universe import UniverseIssuer
+
+    issuer = UniverseIssuer(
+        "AB InBev", "ABIBB", "Brazil", "BE", "Beverages", 85.0,
+        equity_ticker="ABI BB Equity", cds_ticker="ABIBB CDS EUR SR 5Y D14 Corp",
+    )
+    assert issuer_securities(issuer) == ("ABI BB Equity", "ABIBB CDS EUR SR 5Y D14 Corp")

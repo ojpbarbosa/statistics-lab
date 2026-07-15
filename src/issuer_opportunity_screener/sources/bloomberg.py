@@ -58,6 +58,14 @@ def cds_ticker(issuer_ticker: str) -> str:
     return f"{issuer_ticker} CDS USD SR 5Y D14 Corp"
 
 
+def issuer_securities(issuer: UniverseIssuer) -> tuple[str, str]:
+    """Resolve (equity_security, cds_security), preferring explicit universe
+    overrides over the derived `{ticker} US Equity` / D14 CDS conventions."""
+    equity = issuer.equity_ticker or f"{issuer.ticker} US Equity"
+    cds = issuer.cds_ticker or cds_ticker(issuer.ticker)
+    return equity, cds
+
+
 def flatten_field_element(el):
     """Flatten a blpapi Element to a plain python value.
 
@@ -248,11 +256,12 @@ class BloombergSource:
         for index, issuer in enumerate(issuers, start=1):
             log.step(f"({index}/{total}) {issuer.ticker} — {issuer.issuer}")
             try:
-                equity_security = f"{issuer.ticker} US Equity"
-                cds_security = cds_ticker(issuer.ticker)
+                equity_security, cds_security = issuer_securities(issuer)
                 rows = self._reference_fields(session, [equity_security, cds_security], REFDATA_FIELDS)
                 equity_row = rows.get(equity_security, {})
                 cds_row = rows.get(cds_security, {})
+                if "PX_LAST" not in equity_row:
+                    log.trace(f"{issuer.ticker}: equity handle {equity_security!r} did not resolve")
 
                 total_recs = sum(equity_row.get(f, 0) or 0 for f in ("TOT_BUY_REC", "TOT_SELL_REC", "TOT_HOLD_REC"))
                 fields = {
@@ -277,7 +286,7 @@ class BloombergSource:
 
                 bond_note = None
                 try:
-                    candidates, chain_len = self._bond_candidates(session, issuer.ticker)
+                    candidates, chain_len = self._bond_candidates(session, equity_security)
                     bond = select_bond(candidates, as_of=as_of.date())
                     if bond is None:
                         bond_note = (
@@ -326,14 +335,14 @@ class BloombergSource:
             history=history, brazil=brazil, failures=failures,
         )
 
-    def _bond_candidates(self, session, issuer_ticker: str) -> tuple[list[dict], int]:
+    def _bond_candidates(self, session, equity_security: str) -> tuple[list[dict], int]:
         """Discover the issuer's bonds via BOND_CHAIN BDS, then pull BOND_FIELDS.
 
         Returns (candidates, chain_length) so callers can report where
         discovery thinned out.
         """
-        chain_rows = self._reference_fields(session, [f"{issuer_ticker} US Equity"], ["BOND_CHAIN"])
-        chain = chain_rows.get(f"{issuer_ticker} US Equity", {}).get("BOND_CHAIN") or []
+        chain_rows = self._reference_fields(session, [equity_security], ["BOND_CHAIN"])
+        chain = chain_rows.get(equity_security, {}).get("BOND_CHAIN") or []
         securities = [chain_security(item) for item in chain][:50]
         if not securities:
             return [], len(chain)

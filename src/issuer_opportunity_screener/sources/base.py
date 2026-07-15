@@ -19,6 +19,8 @@ class UniverseIssuer:
     sector: str
     recognition_score: float
     internal_rating: str | None = None
+    equity_ticker: str | None = None  # explicit Bloomberg handle, e.g. "ABI BB Equity"
+    cds_ticker: str | None = None  # explicit CDS handle when the derived convention fails
 
 
 @dataclass

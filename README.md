@@ -39,7 +39,11 @@ selection, and history fetch during a refresh.
 ## Layout
 
 - `data/universe.csv` — desk-editable universe (issuer, ticker, basket,
-  recognition_score, internal_rating).
+  recognition_score, internal_rating), plus optional Bloomberg handle
+  overrides per issuer: `equity_ticker` (e.g. `ABI BB Equity` for non-US
+  listings) and `cds_ticker` (when the derived
+  `{ticker} CDS USD SR 5Y D14 Corp` convention doesn't resolve). Filling
+  these is how coverage improves for non-US names.
 - `data/snapshots/<timestamp>/` — append-only parquet snapshots + manifest.
 - `src/issuer_opportunity_screener/` — universe → sources → pipeline →
   snapshots → scoring → app (strictly one-directional).
