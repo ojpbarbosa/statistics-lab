@@ -275,3 +275,47 @@ def test_rejection_summary_itemizes_reasons():
     assert "1 empty refdata row" in summary
     assert "1 eligible" in summary
     assert "Subordinated" in summary  # top rejected ranks are named
+
+
+def test_bond_currencies_from_env(monkeypatch):
+    from issuer_opportunity_screener.sources.bloomberg import bond_currencies_from_env
+
+    monkeypatch.delenv("IOS_BOND_CURRENCIES", raising=False)
+    assert bond_currencies_from_env() == ("USD",)
+    monkeypatch.setenv("IOS_BOND_CURRENCIES", "usd, eur")
+    assert bond_currencies_from_env() == ("USD", "EUR")
+    monkeypatch.setenv("IOS_BOND_CURRENCIES", " ")
+    assert bond_currencies_from_env() == ("USD",)
+
+
+def test_select_bond_eur_eligible_when_allowed():
+    from issuer_opportunity_screener.sources.bloomberg import select_bond as select
+
+    eur_only = [bond("EUR1", 5.0, crncy="EUR")]
+    assert select(eur_only, as_of=AS_OF) is None
+    picked = select(eur_only, as_of=AS_OF, currencies=("USD", "EUR"))
+    assert picked["security"] == "EUR1"
+
+
+def test_select_bond_prefers_earlier_currency_over_closer_tenor():
+    from issuer_opportunity_screener.sources.bloomberg import select_bond as select
+
+    candidates = [bond("USD-far", 8.5, crncy="USD"), bond("EUR-close", 5.0, crncy="EUR")]
+    picked = select(candidates, as_of=AS_OF, currencies=("USD", "EUR"))
+    assert picked["security"] == "USD-far"
+
+
+def test_select_bond_custom_tenor_window():
+    from issuer_opportunity_screener.sources.bloomberg import select_bond as select
+
+    long_bond = [bond("LONG", 15.0)]
+    assert select(long_bond, as_of=AS_OF) is None
+    picked = select(long_bond, as_of=AS_OF, tenor_max=20.0)
+    assert picked["security"] == "LONG"
+
+
+def test_rejection_summary_names_allowed_currencies():
+    from issuer_opportunity_screener.sources.bloomberg import rejection_summary
+
+    summary = rejection_summary([bond("GBP1", 5.0, crncy="GBP")], as_of=AS_OF, currencies=("USD", "EUR"))
+    assert "1 non-USD/EUR" in summary

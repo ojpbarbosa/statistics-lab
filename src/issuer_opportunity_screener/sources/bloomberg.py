@@ -128,26 +128,53 @@ def rank_is_senior_unsecured(rank: str | None) -> bool:
 
 
 _CANDIDATE_DATA_KEYS = ("crncy", "payment_rank", "maturity", "z_spread_bps", "last_price", "coupon")
+DEFAULT_BOND_CURRENCIES = ("USD",)
 
 
-def _rejection_reason(candidate: dict, as_of: dt.date) -> str:
+def bond_currencies_from_env() -> tuple[str, ...]:
+    """Allowed bond currencies in preference order, e.g. IOS_BOND_CURRENCIES=USD,EUR."""
+    raw = os.environ.get("IOS_BOND_CURRENCIES", "")
+    parsed = tuple(c.strip().upper() for c in raw.split(",") if c.strip())
+    return parsed or DEFAULT_BOND_CURRENCIES
+
+
+def tenor_window_from_env() -> tuple[float, float]:
+    return (
+        float(os.environ.get("IOS_TENOR_MIN_YEARS", TENOR_MIN_YEARS)),
+        float(os.environ.get("IOS_TENOR_MAX_YEARS", TENOR_MAX_YEARS)),
+    )
+
+
+def _rejection_reason(
+    candidate: dict,
+    as_of: dt.date,
+    currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES,
+    tenor_min: float = TENOR_MIN_YEARS,
+    tenor_max: float = TENOR_MAX_YEARS,
+) -> str:
     """Why this candidate fails eligibility; 'eligible' when it doesn't."""
     if all(candidate.get(key) is None for key in _CANDIDATE_DATA_KEYS):
         return "empty refdata row"
-    if candidate.get("crncy") != "USD":
-        return "non-USD"
+    if candidate.get("crncy") not in currencies:
+        return f"non-{'/'.join(currencies)}"
     if not rank_is_senior_unsecured(candidate.get("payment_rank")):
         return "rank mismatch"
     maturity = candidate.get("maturity")
     if maturity is None:
         return "no maturity"
     years = (maturity - as_of).days / 365.25
-    if not TENOR_MIN_YEARS <= years <= TENOR_MAX_YEARS:
-        return "tenor outside 3-10y"
+    if not tenor_min <= years <= tenor_max:
+        return f"tenor outside {tenor_min:g}-{tenor_max:g}y"
     return "eligible"
 
 
-def rejection_summary(candidates: list[dict], as_of: dt.date) -> str:
+def rejection_summary(
+    candidates: list[dict],
+    as_of: dt.date,
+    currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES,
+    tenor_min: float = TENOR_MIN_YEARS,
+    tenor_max: float = TENOR_MAX_YEARS,
+) -> str:
     """Per-reason counts plus the most common rejected ranks — makes a
     zero-eligible run self-diagnosing from the quality notes alone."""
     from collections import Counter
@@ -155,7 +182,7 @@ def rejection_summary(candidates: list[dict], as_of: dt.date) -> str:
     reasons: Counter[str] = Counter()
     rejected_ranks: Counter[str] = Counter()
     for candidate in candidates:
-        reason = _rejection_reason(candidate, as_of)
+        reason = _rejection_reason(candidate, as_of, currencies, tenor_min, tenor_max)
         reasons[reason] += 1
         if reason == "rank mismatch":
             rejected_ranks[str(candidate.get("payment_rank"))] += 1
@@ -166,17 +193,28 @@ def rejection_summary(candidates: list[dict], as_of: dt.date) -> str:
     return "; ".join(parts) if parts else "no candidates"
 
 
-def select_bond(candidates: list[dict], as_of: dt.date) -> dict | None:
+def select_bond(
+    candidates: list[dict],
+    as_of: dt.date,
+    currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES,
+    tenor_min: float = TENOR_MIN_YEARS,
+    tenor_max: float = TENOR_MAX_YEARS,
+) -> dict | None:
+    """Pick the best eligible bond: preferred currency first, then closest to
+    the 5y point (clamped into the tenor window), then largest outstanding."""
+    target = min(max(5.0, tenor_min), tenor_max)
     eligible = []
     for c in candidates:
-        if _rejection_reason(c, as_of) != "eligible":
+        if _rejection_reason(c, as_of, currencies, tenor_min, tenor_max) != "eligible":
             continue
         years = (c["maturity"] - as_of).days / 365.25
-        eligible.append((abs(years - 5.0), -(c.get("amt_outstanding") or 0.0), c))
+        eligible.append(
+            (currencies.index(c["crncy"]), abs(years - target), -(c.get("amt_outstanding") or 0.0), c)
+        )
     if not eligible:
         return None
-    eligible.sort(key=lambda t: (t[0], t[1]))
-    return eligible[0][2]
+    eligible.sort(key=lambda t: (t[0], t[1], t[2]))
+    return eligible[0][3]
 
 
 def credit_from_fields(ticker: str, fields: dict, bond: dict | None) -> IssuerCredit:
@@ -218,6 +256,8 @@ class BloombergSource:
     def __init__(self, host: str | None = None, port: int | None = None):
         self.host = host or os.environ.get("IOS_BB_HOST", "localhost")
         self.port = port if port is not None else int(os.environ.get("IOS_BB_PORT", "8194"))
+        self.currencies = bond_currencies_from_env()
+        self.tenor_min, self.tenor_max = tenor_window_from_env()
 
     # --- blpapi boundary (untested; verified live on the Terminal machine) ---
 
@@ -364,13 +404,24 @@ class BloombergSource:
                 bond_note = None
                 try:
                     candidates, discovered = self._bond_candidates(session, equity_security, issuer.ticker)
-                    bond = select_bond(candidates, as_of=as_of.date())
+                    bond = select_bond(
+                        candidates,
+                        as_of=as_of.date(),
+                        currencies=self.currencies,
+                        tenor_min=self.tenor_min,
+                        tenor_max=self.tenor_max,
+                    )
                     if bond is None:
                         bond_note = (
                             f"bond discovery: {discovered} securities discovered, 0 selected — "
-                            f"{rejection_summary(candidates, as_of.date())}"
+                            f"{rejection_summary(candidates, as_of.date(), self.currencies, self.tenor_min, self.tenor_max)}"
                         )
                         log.warn(f"{issuer.ticker}: {bond_note}")
+                    elif bond.get("crncy") and bond["crncy"] != "USD":
+                        bond_note = (
+                            f"selected bond is {bond['crncy']}-denominated; "
+                            f"z-spread vs the Brazil USD benchmark is indicative only"
+                        )
                     else:
                         log.trace(
                             f"{issuer.ticker}: bond {bond.get('security')} "
@@ -442,13 +493,15 @@ class BloombergSource:
         """
         chain_rows = self._reference_fields(session, [equity_security], ["BOND_CHAIN"])
         chain = chain_rows.get(equity_security, {}).get("BOND_CHAIN") or []
-        securities = [chain_security(item) for item in chain][:50]
+        securities = [chain_security(item) for item in chain]
         if not securities:
             log.trace(f"{ticker}: BOND_CHAIN empty; falling back to //blp/instruments lookup")
-            securities = self._instrument_lookup(session, ticker)[:50]
+            securities = self._instrument_lookup(session, ticker)
         if not securities:
             return [], 0
-        rows = self._reference_fields(session, securities, BOND_FIELDS)
+        rows: dict[str, dict] = {}
+        for start in range(0, len(securities), 100):  # refdata in polite batches
+            rows.update(self._reference_fields(session, securities[start : start + 100], BOND_FIELDS))
         candidates = []
         for security, values in rows.items():
             candidates.append(

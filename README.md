@@ -30,6 +30,8 @@ poetry run streamlit run src/issuer_opportunity_screener/app.py
 | `IOS_BB_HOST` | `localhost` | Bloomberg API host (e.g. a remote Terminal PC or B-PIPE endpoint) |
 | `IOS_BB_PORT` | `8194` | Bloomberg API port |
 | `IOS_LOG_LEVEL` | `step` | Terminal log verbosity: `trace`, `step`, `info`, `warn`, `error` (`success` logs at `info` rank) |
+| `IOS_BOND_CURRENCIES` | `USD` | Allowed bond currencies in preference order, e.g. `USD,EUR` (earlier wins when both are eligible; non-USD selections carry an "indicative only" quality note) |
+| `IOS_TENOR_MIN_YEARS` / `IOS_TENOR_MAX_YEARS` | `3` / `10` | Bond maturity window for eligibility |
 
 Logs go to stderr as `{timestamp} [scope] <level> {message}` with ANSI colors
 (auto-disabled when not a TTY or when `NO_COLOR` is set; `IOS_FORCE_COLOR=1`
@@ -48,8 +50,9 @@ selection, and history fetch during a refresh.
 - `src/issuer_opportunity_screener/` — universe → sources → pipeline →
   snapshots → scoring → app (strictly one-directional).
 
-The dashboard ships a terminal-dark custom theme; switch to light via the
-app menu (⋮ → Settings → Light). Chart colors are validated for both modes.
+The dashboard defines both a terminal-dark and a paper-light theme
+(`[theme.dark]` / `[theme.light]`); it follows your OS/browser color scheme
+and the ⋮ → Settings toggle. Chart colors are validated for both modes.
 
 ## Desk rules encoded
 
