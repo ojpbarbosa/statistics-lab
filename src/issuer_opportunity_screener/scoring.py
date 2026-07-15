@@ -315,5 +315,14 @@ def screen_frame(snap: Snapshot, scores: list[IssuerScore]) -> pd.DataFrame:
                 "quality_notes": row.quality_notes,
             }
         )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "issuer", "ticker", "basket", "tier", "composite", "viable",
+                "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
+                "bond_last_price", "rating_composite", "internal_rating",
+                "recognition_score", "partial_data", "quality_notes",
+            ]
+        )
     frame = pd.DataFrame(rows)
     return frame.sort_values("composite", ascending=False).reset_index(drop=True)

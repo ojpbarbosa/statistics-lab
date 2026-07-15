@@ -106,3 +106,14 @@ def test_partially_filled_internal_rating_survives_parquet_roundtrip(tmp_path):
     assert rated.internal_rating == "BB+"
     unrated = frame[frame.ticker != "TICK0"]
     assert unrated.internal_rating.isna().all()
+
+
+def test_screen_frame_empty_scores(snap):
+    frame = screen_frame(snap, [])
+    assert frame.empty
+    assert list(frame.columns) == [
+        "issuer", "ticker", "basket", "tier", "composite", "viable",
+        "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
+        "bond_last_price", "rating_composite", "internal_rating",
+        "recognition_score", "partial_data", "quality_notes",
+    ]

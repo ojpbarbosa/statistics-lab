@@ -150,6 +150,13 @@ def main():
         st.sidebar.warning(f"Partial snapshot — {len(snap.manifest['failures'])} issuer(s) failed.")
 
     scores = score_snapshot(snap)
+    if not scores:
+        st.warning("No scorable issuers in this snapshot — check the Data quality tab.")
+        (tab_quality,) = st.tabs(["Data quality"])
+        with tab_quality:
+            render_quality_tab(snap)
+        return
+
     tab_screen, tab_issuer, tab_quality = st.tabs(["Screen", "Issuer detail", "Data quality"])
     with tab_screen:
         render_screen_tab(snap, scores)
