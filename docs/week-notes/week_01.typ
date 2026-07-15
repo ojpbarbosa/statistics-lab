@@ -48,3 +48,8 @@
 - Start first raw pull and data quality checks.
 - Run the revised raw-data and screen commands against Bloomberg and review `bloomberg_data_quality.csv` and `bloomberg_screen_validation.csv`.
 - Quarantine mappings that still fail issuer identity validation and confirm canonical Bloomberg handles with the desk.
+
+=== 2026-07-15 v2 Rebuild
+- Rebuilt the application as a layered package: universe config, source adapters (Bloomberg plus deterministic fixture), append-only parquet snapshots, composite scoring, and a Streamlit dashboard.
+- The v1 CLI structure was retired; see `docs/superpowers/specs/2026-07-15-issuer-opportunity-screener-design.md`.
+- `docs/week-notes/bloomberg_data_discovery.typ` was lost during the repository wipe and could not be recovered.
