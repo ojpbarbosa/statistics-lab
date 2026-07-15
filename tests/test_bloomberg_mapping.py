@@ -143,3 +143,33 @@ def test_flatten_field_element_array_uses_first_sub_element():
 def test_flatten_field_element_array_row_with_no_sub_elements_falls_back_to_str():
     rows = [FakeRow([])]
     assert flatten_field_element(FakeArrayElement(rows)) == ["EMPTY_ROW"]
+
+
+def test_bloomberg_source_reads_host_from_env(monkeypatch):
+    from issuer_opportunity_screener.sources.bloomberg import BloombergSource
+
+    monkeypatch.setenv("IOS_BB_HOST", "10.1.2.3")
+    monkeypatch.setenv("IOS_BB_PORT", "9999")
+    source = BloombergSource()
+    assert source.host == "10.1.2.3"
+    assert source.port == 9999
+
+
+def test_bloomberg_source_explicit_args_beat_env(monkeypatch):
+    from issuer_opportunity_screener.sources.bloomberg import BloombergSource
+
+    monkeypatch.setenv("IOS_BB_HOST", "10.1.2.3")
+    monkeypatch.setenv("IOS_BB_PORT", "9999")
+    source = BloombergSource(host="terminal-pc", port=8195)
+    assert source.host == "terminal-pc"
+    assert source.port == 8195
+
+
+def test_bloomberg_source_defaults_without_env(monkeypatch):
+    from issuer_opportunity_screener.sources.bloomberg import BloombergSource
+
+    monkeypatch.delenv("IOS_BB_HOST", raising=False)
+    monkeypatch.delenv("IOS_BB_PORT", raising=False)
+    source = BloombergSource()
+    assert source.host == "localhost"
+    assert source.port == 8194

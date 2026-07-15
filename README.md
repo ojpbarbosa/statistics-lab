@@ -21,6 +21,15 @@ IOS_SOURCE=fixture poetry run streamlit run src/issuer_opportunity_screener/app.
 poetry run streamlit run src/issuer_opportunity_screener/app.py
 ```
 
+## Configuration (env vars)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `IOS_DATA_DIR` | `data` | Root for `universe.csv` and `snapshots/` |
+| `IOS_SOURCE` | (unset → live Bloomberg) | `fixture` switches Refresh to synthetic data |
+| `IOS_BB_HOST` | `localhost` | Bloomberg API host (e.g. a remote Terminal PC or B-PIPE endpoint) |
+| `IOS_BB_PORT` | `8194` | Bloomberg API port |
+
 ## Layout
 
 - `data/universe.csv` — desk-editable universe (issuer, ticker, basket,

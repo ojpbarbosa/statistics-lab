@@ -11,6 +11,7 @@ Field mnemonics are best-effort and MUST be verified on the Terminal machine
 from __future__ import annotations
 
 import datetime as dt
+import os
 
 from issuer_opportunity_screener.sources.base import (
     BloombergUnavailable,
@@ -114,9 +115,9 @@ def credit_from_fields(ticker: str, fields: dict, bond: dict | None) -> IssuerCr
 class BloombergSource:
     name = "bloomberg"
 
-    def __init__(self, host: str = "localhost", port: int = 8194):
-        self.host = host
-        self.port = port
+    def __init__(self, host: str | None = None, port: int | None = None):
+        self.host = host or os.environ.get("IOS_BB_HOST", "localhost")
+        self.port = port if port is not None else int(os.environ.get("IOS_BB_PORT", "8194"))
 
     # --- blpapi boundary (untested; verified live on the Terminal machine) ---
 
