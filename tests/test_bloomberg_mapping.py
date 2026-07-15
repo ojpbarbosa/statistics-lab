@@ -228,3 +228,50 @@ def test_security_matches_ticker():
     assert security_matches_ticker("AMD 4.393 06/01/46 Corp", "AMD") is True
     assert security_matches_ticker("AMDX 5 01/01/30 Corp", "AMD") is False
     assert security_matches_ticker("GM Financial 5.4 04/01/48 Corp", "GM") is True
+
+
+def test_rank_is_senior_unsecured_variants():
+    from issuer_opportunity_screener.sources.bloomberg import rank_is_senior_unsecured
+
+    assert rank_is_senior_unsecured("Sr Unsecured") is True
+    assert rank_is_senior_unsecured("SENIOR UNSECURED") is True
+    assert rank_is_senior_unsecured("Unsecured") is True
+    assert rank_is_senior_unsecured("Sr Preferred") is True
+    assert rank_is_senior_unsecured("Senior Non-Preferred") is True
+    assert rank_is_senior_unsecured("Sr Non Preferred") is True
+    assert rank_is_senior_unsecured("Secured") is False
+    assert rank_is_senior_unsecured("1st Lien Secured") is False
+    assert rank_is_senior_unsecured("Subordinated") is False
+    assert rank_is_senior_unsecured("Sr Subordinated") is False
+    assert rank_is_senior_unsecured("Jr Subordinated") is False
+    assert rank_is_senior_unsecured(None) is False
+    assert rank_is_senior_unsecured("") is False
+
+
+def test_select_bond_accepts_senior_preferred():
+    picked = select_bond([bond("SP", 5.0, rank="Sr Preferred")], as_of=AS_OF)
+    assert picked["security"] == "SP"
+
+
+def test_rejection_summary_itemizes_reasons():
+    import datetime as dtmod
+
+    from issuer_opportunity_screener.sources.bloomberg import rejection_summary
+
+    candidates = [
+        bond("EUR1", 5.0, crncy="EUR"),
+        bond("EUR2", 5.0, crncy="EUR"),
+        bond("SUB", 5.0, rank="Subordinated"),
+        bond("SUB2", 5.0, rank="Sr Subordinated"),
+        bond("SHORT", 1.0),
+        {"security": "EMPTY", "crncy": None, "payment_rank": None, "maturity": None,
+         "amt_outstanding": None, "z_spread_bps": None, "last_price": None, "coupon": None},
+        bond("OK", 5.0),
+    ]
+    summary = rejection_summary(candidates, as_of=AS_OF)
+    assert "2 non-USD" in summary
+    assert "2 rank mismatch" in summary
+    assert "1 tenor outside 3-10y" in summary
+    assert "1 empty refdata row" in summary
+    assert "1 eligible" in summary
+    assert "Subordinated" in summary  # top rejected ranks are named

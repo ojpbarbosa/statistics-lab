@@ -101,19 +101,77 @@ def flatten_field_element(el):
     return el.getValue()
 
 
+def rank_is_senior_unsecured(rank: str | None) -> bool:
+    """Senior-unsecured-equivalent PAYMENT_RANK values.
+
+    Bloomberg labels senior bank paper 'Sr Preferred' / 'Sr Non Preferred';
+    both are senior unsecured for the desk's purposes. Anything secured,
+    subordinated, or junior is out.
+    """
+    if not rank:
+        return False
+    value = rank.lower()
+    if "subordinat" in value or "junior" in value or value.startswith("jr"):
+        return False
+    if "unsecured" in value:
+        return True
+    if "secured" in value or "lien" in value:
+        return False
+    return (
+        "sr preferred" in value
+        or "senior preferred" in value
+        or "sr non preferred" in value
+        or "sr non-preferred" in value
+        or "senior non preferred" in value
+        or "senior non-preferred" in value
+    )
+
+
+_CANDIDATE_DATA_KEYS = ("crncy", "payment_rank", "maturity", "z_spread_bps", "last_price", "coupon")
+
+
+def _rejection_reason(candidate: dict, as_of: dt.date) -> str:
+    """Why this candidate fails eligibility; 'eligible' when it doesn't."""
+    if all(candidate.get(key) is None for key in _CANDIDATE_DATA_KEYS):
+        return "empty refdata row"
+    if candidate.get("crncy") != "USD":
+        return "non-USD"
+    if not rank_is_senior_unsecured(candidate.get("payment_rank")):
+        return "rank mismatch"
+    maturity = candidate.get("maturity")
+    if maturity is None:
+        return "no maturity"
+    years = (maturity - as_of).days / 365.25
+    if not TENOR_MIN_YEARS <= years <= TENOR_MAX_YEARS:
+        return "tenor outside 3-10y"
+    return "eligible"
+
+
+def rejection_summary(candidates: list[dict], as_of: dt.date) -> str:
+    """Per-reason counts plus the most common rejected ranks — makes a
+    zero-eligible run self-diagnosing from the quality notes alone."""
+    from collections import Counter
+
+    reasons: Counter[str] = Counter()
+    rejected_ranks: Counter[str] = Counter()
+    for candidate in candidates:
+        reason = _rejection_reason(candidate, as_of)
+        reasons[reason] += 1
+        if reason == "rank mismatch":
+            rejected_ranks[str(candidate.get("payment_rank"))] += 1
+    parts = [f"{count} {reason}" for reason, count in reasons.most_common()]
+    if rejected_ranks:
+        top = ", ".join(f"{rank!r}×{count}" for rank, count in rejected_ranks.most_common(3))
+        parts.append(f"top rejected ranks: {top}")
+    return "; ".join(parts) if parts else "no candidates"
+
+
 def select_bond(candidates: list[dict], as_of: dt.date) -> dict | None:
     eligible = []
     for c in candidates:
-        if c.get("crncy") != "USD":
+        if _rejection_reason(c, as_of) != "eligible":
             continue
-        if "Sr Unsecured" not in (c.get("payment_rank") or ""):
-            continue
-        maturity = c.get("maturity")
-        if maturity is None:
-            continue
-        years = (maturity - as_of).days / 365.25
-        if not TENOR_MIN_YEARS <= years <= TENOR_MAX_YEARS:
-            continue
+        years = (c["maturity"] - as_of).days / 365.25
         eligible.append((abs(years - 5.0), -(c.get("amt_outstanding") or 0.0), c))
     if not eligible:
         return None
@@ -309,15 +367,9 @@ class BloombergSource:
                     bond = select_bond(candidates, as_of=as_of.date())
                     if bond is None:
                         bond_note = (
-                            f"bond discovery: {discovered} securities discovered, "
-                            f"{len(candidates)} resolved via refdata, 0 eligible (USD Sr Unsecured 3-10y)"
+                            f"bond discovery: {discovered} securities discovered, 0 selected — "
+                            f"{rejection_summary(candidates, as_of.date())}"
                         )
-                        if candidates:
-                            sample = candidates[0]
-                            bond_note += (
-                                f"; sample candidate: crncy={sample.get('crncy')!r},"
-                                f" rank={sample.get('payment_rank')!r}, maturity={sample.get('maturity')}"
-                            )
                         log.warn(f"{issuer.ticker}: {bond_note}")
                     else:
                         log.trace(

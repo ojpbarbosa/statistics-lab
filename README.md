@@ -48,9 +48,14 @@ selection, and history fetch during a refresh.
 - `src/issuer_opportunity_screener/` — universe → sources → pipeline →
   snapshots → scoring → app (strictly one-directional).
 
+The dashboard ships a terminal-dark custom theme; switch to light via the
+app menu (⋮ → Settings → Light). Chart colors are validated for both modes.
+
 ## Desk rules encoded
 
 - CDS-first: 5Y CDS preferred, bond z-spread fallback.
+- Senior unsecured includes bank senior paper labeled `Sr Preferred` /
+  `Sr Non Preferred` on Bloomberg (desk to confirm SNP inclusion).
 - Viability vs Brazil: spread ≥ Brazil, or ≥ Brazil − 20 bps with a rating
   strictly stronger than Brazil.
 - Composite score: 35% spread attractiveness, 20% credit quality,

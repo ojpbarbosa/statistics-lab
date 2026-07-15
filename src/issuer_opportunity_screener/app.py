@@ -33,8 +33,9 @@ DATA_ROOT = Path(os.environ.get("IOS_DATA_DIR", "data"))
 UNIVERSE_PATH = DATA_ROOT / "universe.csv"
 SNAPSHOTS_ROOT = DATA_ROOT / "snapshots"
 
-ISSUER_COLOR = "#2287c7"  # validated vs dark surface (dataviz six checks)
+ISSUER_COLOR = "#2287c7"  # validated for BOTH light and dark surfaces (dataviz six checks)
 BRAZIL_COLOR = "#bc8400"
+MUTED_COLOR = "#8a919c"  # neutral status for "not viable"; shape/legend carry identity
 
 st.set_page_config(page_title="Issuer Opportunity Screener", layout="wide")
 st.markdown(
@@ -115,6 +116,66 @@ SCREEN_COLUMNS = {
 }
 
 
+def render_market_map(view: pd.DataFrame):
+    import altair as alt
+
+    data = view.assign(status=view.viable.map({True: "viable", False: "not viable"}))
+    points = (
+        alt.Chart(data)
+        .mark_point(size=90, filled=True, opacity=0.9)
+        .encode(
+            x=alt.X("composite:Q", title="composite score", scale=alt.Scale(domain=[0, 100])),
+            y=alt.Y("spread_vs_brazil_bps:Q", title="spread vs Brazil (bps)"),
+            color=alt.Color(
+                "status:N",
+                scale=alt.Scale(domain=["viable", "not viable"], range=[ISSUER_COLOR, MUTED_COLOR]),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip("issuer:N"),
+                alt.Tooltip("ticker:N"),
+                alt.Tooltip("tier:N"),
+                alt.Tooltip("composite:Q", format=".1f"),
+                alt.Tooltip("spread_vs_brazil_bps:Q", format="+.0f", title="vs Brazil (bps)"),
+            ],
+        )
+    )
+    brazil_line = (
+        alt.Chart(pd.DataFrame({"y": [0]}))
+        .mark_rule(color=BRAZIL_COLOR, strokeDash=[6, 4], strokeWidth=2)
+        .encode(y="y:Q", tooltip=alt.value("Brazil benchmark (0 bps = trades flat to Brazil)"))
+    )
+    st.altair_chart((points + brazil_line).properties(height=300), width="stretch")
+
+
+def render_basket_bar(view: pd.DataFrame):
+    import altair as alt
+
+    agg = view.groupby("basket", as_index=False).agg(
+        median_vs_brazil=("spread_vs_brazil_bps", "median"),
+        names=("ticker", "count"),
+    )
+    bars = (
+        alt.Chart(agg)
+        .mark_bar(color=ISSUER_COLOR, cornerRadiusEnd=4, size=18)
+        .encode(
+            y=alt.Y("basket:N", sort="-x", title=None),
+            x=alt.X("median_vs_brazil:Q", title="median spread vs Brazil (bps)"),
+            tooltip=[
+                alt.Tooltip("basket:N"),
+                alt.Tooltip("median_vs_brazil:Q", format="+.0f", title="median vs Brazil (bps)"),
+                alt.Tooltip("names:Q", title="names"),
+            ],
+        )
+    )
+    zero = (
+        alt.Chart(pd.DataFrame({"x": [0]}))
+        .mark_rule(color=BRAZIL_COLOR, strokeDash=[6, 4], strokeWidth=2)
+        .encode(x="x:Q")
+    )
+    st.altair_chart((bars + zero).properties(height=300), width="stretch")
+
+
 def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
     col1, col2, col3, col4 = st.columns(4)
     baskets = col1.multiselect("Basket", sorted(frame.basket.unique()))
@@ -131,6 +192,15 @@ def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
         view = view[view.viable]
     spread = view.cds_5y_bps.fillna(view.bond_z_spread_bps)
     view = view[spread.fillna(0) >= min_spread]
+
+    if not view.empty:
+        map_col, basket_col = st.columns((3, 2))
+        with map_col:
+            st.markdown("##### Market map — score vs spread")
+            render_market_map(view)
+        with basket_col:
+            st.markdown("##### Baskets vs Brazil")
+            render_basket_bar(view)
 
     display = view.assign(
         rating_composite=view.rating_composite.fillna(""),
@@ -158,11 +228,11 @@ def render_history_chart(snap: Snapshot, ticker: str, issuer_name: str):
         alt.Chart(frame)
         .mark_line(color=ISSUER_COLOR, strokeWidth=2, point=alt.OverlayMarkDef(size=22, color=ISSUER_COLOR, opacity=0))
         .encode(
-            x=alt.X("date:T", axis=alt.Axis(title=None, grid=False, labelColor="#9aa4ae")),
+            x=alt.X("date:T", axis=alt.Axis(title=None, grid=False)),
             y=alt.Y(
                 "spread_bps:Q",
                 scale=alt.Scale(zero=False),
-                axis=alt.Axis(title="bps", gridOpacity=0.12, labelColor="#9aa4ae"),
+                axis=alt.Axis(title="bps", gridOpacity=0.12),
             ),
             tooltip=[
                 alt.Tooltip("date:T", title="date"),
