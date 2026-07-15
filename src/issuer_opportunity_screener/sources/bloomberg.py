@@ -38,6 +38,26 @@ def cds_ticker(issuer_ticker: str) -> str:
     return f"{issuer_ticker} CDS USD SR 5Y D14 Corp"
 
 
+def flatten_field_element(el):
+    """Flatten a blpapi Element to a plain python value.
+
+    Scalar fields return el.getValue(). BULK (array) fields such as
+    BOND_CHAIN return a list, one entry per row, using the row's first
+    sub-element value (BOND_CHAIN rows carry the security identifier as
+    their first sub-element); rows with no sub-elements fall back to str(row).
+    """
+    if el.isArray():
+        values = []
+        for i in range(el.numValues()):
+            row = el.getValueAsElement(i)
+            if row.numElements() > 0:
+                values.append(row.getElement(0).getValue())
+            else:
+                values.append(str(row))
+        return values
+    return el.getValue()
+
+
 def select_bond(candidates: list[dict], as_of: dt.date) -> dict | None:
     eligible = []
     for c in candidates:
@@ -138,7 +158,10 @@ class BloombergSource:
                     field_data = row.getElement("fieldData")
                     for j in range(field_data.numElements()):
                         el = field_data.getElement(j)
-                        values[str(el.name())] = el.getValue()
+                        try:
+                            values[str(el.name())] = flatten_field_element(el)
+                        except Exception:  # noqa: BLE001 — one bad field must not kill the request
+                            continue
                     out[security] = values
             if event.eventType() == blpapi.Event.RESPONSE:
                 break
@@ -218,8 +241,16 @@ class BloombergSource:
                         else None
                     ),
                 }
-                bond = select_bond(self._bond_candidates(session, issuer.ticker), as_of=as_of.date())
+                try:
+                    bond = select_bond(self._bond_candidates(session, issuer.ticker), as_of=as_of.date())
+                except Exception as exc:  # noqa: BLE001 — bond discovery must not drop good CDS/equity data
+                    bond = None
+                    bond_discovery_error = exc
+                else:
+                    bond_discovery_error = None
                 credit = credit_from_fields(issuer.ticker, fields, bond)
+                if bond_discovery_error is not None:
+                    credit.quality_notes.append(f"bond discovery failed: {bond_discovery_error}")
                 credits.append(credit)
 
                 spread_security = cds_security if credit.cds_5y_bps is not None else credit.bond.security

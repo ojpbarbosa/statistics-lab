@@ -3,6 +3,7 @@ import datetime as dt
 from issuer_opportunity_screener.sources.bloomberg import (
     cds_ticker,
     credit_from_fields,
+    flatten_field_element,
     select_bond,
 )
 
@@ -84,3 +85,61 @@ def test_credit_from_fields_missing_pieces_add_notes():
 
 def test_module_importable_without_blpapi():
     import issuer_opportunity_screener.sources.bloomberg  # noqa: F401
+
+
+class FakeScalarElement:
+    def isArray(self):
+        return False
+
+    def getValue(self):
+        return 42
+
+
+class FakeSubElement:
+    def __init__(self, value):
+        self._value = value
+
+    def getValue(self):
+        return self._value
+
+
+class FakeRow:
+    def __init__(self, sub_values):
+        self._sub_values = sub_values
+
+    def numElements(self):
+        return len(self._sub_values)
+
+    def getElement(self, index):
+        return FakeSubElement(self._sub_values[index])
+
+    def __str__(self):
+        return "EMPTY_ROW"
+
+
+class FakeArrayElement:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def isArray(self):
+        return True
+
+    def numValues(self):
+        return len(self._rows)
+
+    def getValueAsElement(self, index):
+        return self._rows[index]
+
+
+def test_flatten_field_element_scalar():
+    assert flatten_field_element(FakeScalarElement()) == 42
+
+
+def test_flatten_field_element_array_uses_first_sub_element():
+    rows = [FakeRow(["AA123 Corp"]), FakeRow(["BB456 Corp"])]
+    assert flatten_field_element(FakeArrayElement(rows)) == ["AA123 Corp", "BB456 Corp"]
+
+
+def test_flatten_field_element_array_row_with_no_sub_elements_falls_back_to_str():
+    rows = [FakeRow([])]
+    assert flatten_field_element(FakeArrayElement(rows)) == ["EMPTY_ROW"]
