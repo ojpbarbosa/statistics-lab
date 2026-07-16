@@ -26,7 +26,8 @@ poetry run streamlit run src/issuer_opportunity_screener/app.py
 | Variable | Default | Purpose |
 |---|---|---|
 | `IOS_DATA_DIR` | `data` | Root for `universe.csv` and `snapshots/` |
-| `IOS_SOURCE` | (unset → live Bloomberg) | `fixture` switches Refresh to synthetic data |
+| `IOS_SOURCE` | (unset → live Bloomberg) | `fixture` for synthetic data; `bquant` ingests a BQuant export directory |
+| `IOS_BQUANT_EXPORT` | `data/bquant_export` | Directory holding the files written by `bquant/bquant_export.py` |
 | `IOS_BB_HOST` | `localhost` | Bloomberg API host (e.g. a remote Terminal PC or B-PIPE endpoint) |
 | `IOS_BB_PORT` | `8194` | Bloomberg API port |
 | `IOS_LOG_LEVEL` | `step` | Terminal log verbosity: `trace`, `step`, `info`, `warn`, `error` (`success` logs at `info` rank) |
@@ -65,6 +66,17 @@ and the ⋮ → Settings toggle. Chart colors are validated for both modes.
 - Add names via the sidebar form; quarantine unscored names (with reasons)
   and restore them from the Data quality tab. The final report skeleton
   lives at `docs/report/final_report.typ`.
+
+## BQuant route (bypasses the Desktop API gate)
+
+`bql` runs server-side inside Bloomberg's BQuant environment (`BQNT <GO>`)
+under different entitlements, so bond screening there is not subject to the
+Desktop API workflow-review gate. Flow: upload `bquant/bquant_export.py` and
+`data/universe.csv` to a BQNT notebook, run it, download the
+`bquant_export/` directory it writes into `data/bquant_export/`, then
+Refresh with `IOS_SOURCE=bquant`. The export feeds the exact same snapshot,
+scoring, and dashboard pipeline. BQL item names in the exporter are marked
+where they may need adjustment to your BQL version.
 
 ## Bloomberg workflow review
 

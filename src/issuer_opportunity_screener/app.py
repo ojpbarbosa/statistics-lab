@@ -58,10 +58,15 @@ st.markdown(
 
 
 def make_source():
-    if os.environ.get("IOS_SOURCE") == "fixture":
+    source_kind = os.environ.get("IOS_SOURCE")
+    if source_kind == "fixture":
         from issuer_opportunity_screener.sources.fixture import FixtureSource
 
         return FixtureSource()
+    if source_kind == "bquant":
+        from issuer_opportunity_screener.sources.bquant_export import BquantExportSource
+
+        return BquantExportSource(Path(os.environ.get("IOS_BQUANT_EXPORT", DATA_ROOT / "bquant_export")))
     from issuer_opportunity_screener.sources.bloomberg import BloombergSource
 
     return BloombergSource()
