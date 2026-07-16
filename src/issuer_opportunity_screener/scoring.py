@@ -468,7 +468,8 @@ def screen_frame(snap: Snapshot, scores: list[IssuerScore]) -> pd.DataFrame:
         score = by_ticker.get(row.ticker)
         if score is None:
             continue
-        ext_rank = composite_rating_rank_any(_row_ratings(row))
+        ratings = _row_ratings(row)
+        ext_rank = composite_rating_rank_any(ratings)
         rows.append(
             {
                 "issuer": row.issuer,
@@ -482,10 +483,12 @@ def screen_frame(snap: Snapshot, scores: list[IssuerScore]) -> pd.DataFrame:
                 "bond_z_spread_bps": _opt(row.bond_z_spread_bps),
                 "bond_last_price": _opt(row.bond_last_price),
                 "rating_composite": RATING_ORDER[ext_rank] if ext_rank is not None else None,
+                "rating_source": ", ".join(ratings) if ratings else None,
                 "internal_rating": row.internal_rating if pd.notna(row.internal_rating) else None,
                 "recognition_score": float(row.recognition_score),
                 "partial_data": score.partial_data,
                 "quality_notes": row.quality_notes,
+                "viability_note": score.viability_note,
             }
         )
     if not rows:
@@ -493,8 +496,9 @@ def screen_frame(snap: Snapshot, scores: list[IssuerScore]) -> pd.DataFrame:
             columns=[
                 "issuer", "ticker", "basket", "tier", "composite", "viable",
                 "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
-                "bond_last_price", "rating_composite", "internal_rating",
-                "recognition_score", "partial_data", "quality_notes",
+                "bond_last_price", "rating_composite", "rating_source",
+                "internal_rating", "recognition_score", "partial_data",
+                "quality_notes", "viability_note",
             ]
         )
     frame = pd.DataFrame(rows)

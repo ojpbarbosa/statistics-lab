@@ -51,9 +51,10 @@ def test_composite_renormalizes_missing_blocks(snap):
 
 def test_viability_flags(snap):
     scores = {s.ticker: s for s in score_snapshot(snap)}
-    # TICK5: 140 bps vs Brazil 180 = -40 -> below tolerance, not viable even at BBB+
-    assert scores["TICK5"].viable is False
-    assert scores["TICK5"].spread_vs_brazil_bps == pytest.approx(-40.0)
+    # TICK5: 165 bps vs Brazil 180 = -15 -> within tolerance, BBB+ beats BB: edge case
+    assert scores["TICK5"].viable is True
+    assert scores["TICK5"].spread_vs_brazil_bps == pytest.approx(-15.0)
+    assert "edge case" in scores["TICK5"].viability_note
     # TICK0: base spread 90+0=90? No: idx0 -> 90.0 bps -> -90 not viable
     assert scores["TICK0"].viable is False
     # TICK6: 90 + (6*37)%320 = 90+222 = 312 -> viable
@@ -66,8 +67,9 @@ def test_screen_frame_shape_and_order(snap):
     assert list(frame.columns) == [
         "issuer", "ticker", "basket", "tier", "composite", "viable",
         "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
-        "bond_last_price", "rating_composite", "internal_rating",
-        "recognition_score", "partial_data", "quality_notes",
+        "bond_last_price", "rating_composite", "rating_source",
+        "internal_rating", "recognition_score", "partial_data",
+        "quality_notes", "viability_note",
     ]
     assert len(frame) == len(scores)
     assert list(frame.composite) == sorted(frame.composite, reverse=True)
@@ -114,8 +116,9 @@ def test_screen_frame_empty_scores(snap):
     assert list(frame.columns) == [
         "issuer", "ticker", "basket", "tier", "composite", "viable",
         "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
-        "bond_last_price", "rating_composite", "internal_rating",
-        "recognition_score", "partial_data", "quality_notes",
+        "bond_last_price", "rating_composite", "rating_source",
+        "internal_rating", "recognition_score", "partial_data",
+        "quality_notes", "viability_note",
     ]
 
 
@@ -194,3 +197,18 @@ def test_edge_case_not_viable_without_any_rating(tmp_path):
     score = score_snapshot(snap)[0]
     assert score.viable is False
     assert "no issuer rating" in score.viability_note
+
+
+def test_rating_source_column_names_providers(snap):
+    scores = score_snapshot(snap)
+    frame = screen_frame(snap, scores)
+    tick0 = frame[frame.ticker == "TICK0"].iloc[0]
+    assert tick0.rating_source == "moody, sp, fitch, composite"
+    assert tick0.viability_note
+
+
+def test_edge_case_rows_identifiable_in_screen_frame(snap):
+    frame = screen_frame(snap, score_snapshot(snap))
+    edge = frame[frame.viable & (frame.spread_vs_brazil_bps < 0)]
+    assert "TICK5" in set(edge.ticker)
+    assert (edge.spread_vs_brazil_bps >= -20).all()

@@ -235,6 +235,23 @@ def rejection_summary(
     return "; ".join(parts) if parts else "no candidates"
 
 
+def select_benchmark_bond(candidates: list[dict], as_of: dt.date) -> dict | None:
+    """Sovereign benchmark pick: USD, 3-10y, closest to 5y, largest issue.
+    No payment-rank requirement (govt paper often reports none)."""
+    eligible = []
+    for c in candidates:
+        if c.get("crncy") != "USD" or c.get("maturity") is None:
+            continue
+        years = (c["maturity"] - as_of).days / 365.25
+        if not TENOR_MIN_YEARS <= years <= TENOR_MAX_YEARS:
+            continue
+        eligible.append((abs(years - 5.0), -(c.get("amt_outstanding") or 0.0), c))
+    if not eligible:
+        return None
+    eligible.sort(key=lambda t: (t[0], t[1]))
+    return eligible[0][2]
+
+
 def select_bond(
     candidates: list[dict],
     as_of: dt.date,
@@ -396,15 +413,52 @@ class BloombergSource:
         log.step(f"fetching Brazil benchmark ({BRAZIL_CDS_TICKER})")
         try:
             brazil_row = self._reference_fields(session, [BRAZIL_CDS_TICKER], ["PX_LAST"]).get(BRAZIL_CDS_TICKER, {})
+            brazil_cds = float(brazil_row["PX_LAST"]) if "PX_LAST" in brazil_row else BRAZIL_FALLBACK.cds_5y_bps
             if "PX_LAST" in brazil_row:
-                brazil = BrazilBenchmark(
-                    cds_5y_bps=float(brazil_row["PX_LAST"]),
-                    z_spread_bps=None,
-                    rating_sp=BRAZIL_FALLBACK.rating_sp,
-                )
-                log.info(f"Brazil 5Y CDS: {brazil.cds_5y_bps:.1f} bps")
+                log.info(f"Brazil 5Y CDS: {brazil_cds:.1f} bps")
             else:
-                log.warn(f"Brazil benchmark quote missing; using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
+                log.warn(f"Brazil CDS quote missing; using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
+
+            brazil_bond = None
+            try:
+                govt_securities = [
+                    s
+                    for s in self._instrument_lookup(session, "BRAZIL", yellow_key="YK_FILTER_GOVT")
+                    if " CDS " not in s.upper()
+                ]
+                brazil_bond = select_benchmark_bond(
+                    self._bond_refdata(session, govt_securities, "BRAZIL"), as_of=as_of.date()
+                )
+            except Exception as exc:  # noqa: BLE001: bond discovery is optional for the benchmark
+                log.warn(f"Brazil benchmark bond discovery failed: {exc}")
+            if brazil_bond is not None:
+                log.info(
+                    f"Brazil benchmark bond: {brazil_bond.get('security')} "
+                    f"(z-spread {brazil_bond.get('z_spread_bps')} bps)"
+                )
+            else:
+                log.warn("no Brazil USD benchmark bond in the 3-10y window was found")
+
+            rating_securities = [
+                s for s in ((brazil_bond or {}).get("security"), BRAZIL_CDS_TICKER) if s
+            ]
+            brazil_ratings = merge_ratings(
+                self._reference_fields(session, rating_securities, RATING_FIELDS), rating_securities
+            )
+            headline = (
+                brazil_ratings.get("sp")
+                or brazil_ratings.get("composite")
+                or next(iter(brazil_ratings.values()), BRAZIL_FALLBACK.rating_sp)
+            )
+            log.info(f"Brazil ratings: {brazil_ratings or 'none resolved, using fallback ' + headline}")
+
+            brazil = BrazilBenchmark(
+                cds_5y_bps=brazil_cds,
+                z_spread_bps=(brazil_bond or {}).get("z_spread_bps"),
+                rating_sp=headline,
+                bond_security=(brazil_bond or {}).get("security"),
+                ratings=brazil_ratings,
+            )
         except Exception as exc:  # noqa: BLE001: benchmark failure must not kill the run
             failures["__BRAZIL__"] = f"benchmark fetch failed, using fallback: {exc}"
             log.error(f"Brazil benchmark fetch failed ({exc}); using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
@@ -543,8 +597,8 @@ class BloombergSource:
             history=history, brazil=brazil, failures=failures,
         )
 
-    def _instrument_lookup(self, session, ticker: str) -> list[str]:
-        """Search //blp/instruments for the issuer's corp securities."""
+    def _instrument_lookup(self, session, ticker: str, yellow_key: str = "YK_FILTER_CORP") -> list[str]:
+        """Search //blp/instruments for the issuer's securities."""
         import blpapi
 
         if not session.openService("//blp/instruments"):
@@ -552,7 +606,7 @@ class BloombergSource:
         service = session.getService("//blp/instruments")
         request = service.createRequest("instrumentListRequest")
         request.set("query", ticker)
-        request.set("yellowKeyFilter", "YK_FILTER_CORP")
+        request.set("yellowKeyFilter", yellow_key)
         request.set("maxResults", 200)
         session.sendRequest(request)
         results: list[str] = []

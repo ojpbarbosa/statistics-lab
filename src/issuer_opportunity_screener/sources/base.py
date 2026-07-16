@@ -66,8 +66,10 @@ class HistoryPoint:
 @dataclass(frozen=True)
 class BrazilBenchmark:
     cds_5y_bps: float
-    z_spread_bps: float | None
-    rating_sp: str
+    z_spread_bps: float | None  # z-spread of the benchmark bond when discovered
+    rating_sp: str  # headline rating (raw value from the first provider that resolved)
+    bond_security: str | None = None  # the sovereign USD benchmark bond used
+    ratings: dict[str, str] = field(default_factory=dict)  # provider -> raw value
 
 
 @dataclass

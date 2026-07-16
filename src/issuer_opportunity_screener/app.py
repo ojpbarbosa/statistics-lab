@@ -89,13 +89,23 @@ def sidebar(snapshot_dirs: list[Path]) -> Path | None:
 
 
 def render_kpis(snap: Snapshot, frame: pd.DataFrame):
-    brazil = snap.manifest["brazil"]["cds_5y_bps"]
+    brazil = snap.manifest["brazil"]
     scored, universe_size = len(frame), snap.manifest["issuer_count"]
     columns = st.columns(4)
     columns[0].metric("Issuers scored", f"{scored}/{universe_size}")
     columns[1].metric("Tier A", int((frame.tier == "A").sum()))
     columns[2].metric("Viable vs Brazil", int(frame.viable.sum()))
-    columns[3].metric("Brazil 5Y CDS", f"{brazil:.0f} bps")
+    columns[3].metric(
+        "Brazil 5Y CDS",
+        f"{brazil['cds_5y_bps']:.0f} bps",
+        f"rating {brazil.get('rating_sp', 'n/a')}",
+        delta_color="off",
+    )
+    bond = brazil.get("bond_security")
+    z_spread = brazil.get("z_spread_bps")
+    if bond:
+        z_text = f", z-spread {z_spread:.0f} bps" if z_spread is not None else ""
+        columns[3].caption(f"benchmark bond: {bond}{z_text}")
 
 
 SCREEN_COLUMNS = {
@@ -110,11 +120,18 @@ SCREEN_COLUMNS = {
     "bond_z_spread_bps": st.column_config.NumberColumn("Z-spread", format="%.0f bps"),
     "bond_last_price": st.column_config.NumberColumn("Last px", format="%.2f"),
     "rating_composite": st.column_config.TextColumn("Rating", width="small"),
+    "rating_source": st.column_config.TextColumn("Rating providers"),
     "internal_rating": st.column_config.TextColumn("Internal", width="small"),
     "recognition_score": st.column_config.NumberColumn("Recognition", format="%.0f"),
     "partial_data": st.column_config.CheckboxColumn("Partial"),
     "quality_notes": st.column_config.TextColumn("Notes"),
+    "viability_note": st.column_config.TextColumn("Viability", width="large"),
 }
+
+EDGE_CASE_COLUMNS = [
+    "issuer", "ticker", "basket", "rating_composite", "rating_source",
+    "cds_5y_bps", "bond_z_spread_bps", "spread_vs_brazil_bps", "viability_note",
+]
 
 
 def render_market_map(view: pd.DataFrame):
@@ -220,6 +237,22 @@ def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
         mime="text/csv",
     )
 
+    st.subheader("Edge cases vs Brazil")
+    st.caption(
+        "Names trading through Brazil by at most 20 bps that stay viable because "
+        "their rating is strictly stronger than Brazil's."
+    )
+    edge = frame[frame.viable & (frame.spread_vs_brazil_bps < 0)]
+    if edge.empty:
+        st.caption("No edge-case names in this snapshot.")
+    else:
+        st.dataframe(
+            edge[EDGE_CASE_COLUMNS],
+            width="stretch",
+            hide_index=True,
+            column_config={key: SCREEN_COLUMNS[key] for key in EDGE_CASE_COLUMNS},
+        )
+
 
 def render_history_chart(snap: Snapshot, ticker: str, issuer_name: str):
     history = snap.history[snap.history.ticker == ticker]
@@ -321,7 +354,16 @@ def render_issuer_tab(snap: Snapshot, scores: list[IssuerScore]):
     )
 
     st.subheader("Replicate on the terminal")
-    replication = [f"- Brazil benchmark: `{BRAZIL_TICKER_HINT}`, field `PX_LAST` = {snap.manifest['brazil']['cds_5y_bps']:.1f} bps"]
+    brazil_manifest = snap.manifest["brazil"]
+    replication = [f"- Brazil benchmark: `{BRAZIL_TICKER_HINT}`, field `PX_LAST` = {brazil_manifest['cds_5y_bps']:.1f} bps"]
+    if brazil_manifest.get("bond_security"):
+        brazil_z = brazil_manifest.get("z_spread_bps")
+        replication.append(
+            f"- Brazil benchmark bond: `{brazil_manifest['bond_security']}`, field `YAS_ZSPREAD`"
+            + (f" = {brazil_z:.0f} bps" if brazil_z is not None else "")
+        )
+    if brazil_manifest.get("ratings"):
+        replication.append(f"- Brazil ratings as fetched: `{brazil_manifest['ratings']}`")
     if pd.notna(getattr(row, "cds_security", None)):
         replication.append(f"- 5Y CDS: `{row.cds_security}`, field `PX_LAST` (spread history: weekly `PX_LAST`, 1y back)")
     if pd.notna(row.bond_security):
@@ -346,6 +388,14 @@ def render_quality_tab(snap: Snapshot):
         manifest["as_of"],
         f'source: {manifest["source"]}' + (" (PARTIAL)" if manifest["partial"] else ""),
         delta_color="inverse" if manifest["partial"] else "off",
+    )
+    brazil = manifest["brazil"]
+    st.caption(
+        f"Brazil benchmark: 5Y CDS {brazil['cds_5y_bps']:.0f} bps"
+        + (f"; bond {brazil['bond_security']}" if brazil.get("bond_security") else "; no benchmark bond resolved")
+        + (f" (z-spread {brazil['z_spread_bps']:.0f} bps)" if brazil.get("z_spread_bps") is not None else "")
+        + f"; rating {brazil.get('rating_sp', 'n/a')}"
+        + (f" from {', '.join(brazil['ratings'])}" if brazil.get("ratings") else " (fallback, no provider resolved)")
     )
     st.subheader("Field coverage")
     coverage = pd.DataFrame(

@@ -375,3 +375,16 @@ def test_merge_ratings_prefers_earlier_securities():
         "dbrs": "BB (high)",
     }
     assert merge_ratings({}, ["X"]) == {}
+
+
+def test_select_benchmark_bond_ignores_payment_rank():
+    from issuer_opportunity_screener.sources.bloomberg import select_benchmark_bond
+
+    candidates = [
+        bond("EUR", 5.0, crncy="EUR"),
+        bond("NORANK", 5.2, rank=None),
+        bond("FAR", 9.5, rank=None),
+    ]
+    picked = select_benchmark_bond(candidates, as_of=AS_OF)
+    assert picked["security"] == "NORANK"
+    assert select_benchmark_bond([bond("SHORT", 1.0)], as_of=AS_OF) is None

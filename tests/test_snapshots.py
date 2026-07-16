@@ -59,3 +59,10 @@ def test_quality_notes_joined(tmp_path, universe, result):
     snap = load_snapshot(write_snapshot(tmp_path, universe, result))
     row = snap.frame[snap.frame.ticker == "TICK1"].iloc[0]
     assert "no liquid CDS quote" in row.quality_notes
+
+
+def test_manifest_brazil_carries_bond_and_ratings(tmp_path, universe, result):
+    snap = load_snapshot(write_snapshot(tmp_path, universe, result))
+    brazil = snap.manifest["brazil"]
+    assert brazil["bond_security"] == "BRAZIL 4.75 06/15/31 Govt"
+    assert brazil["ratings"] == {"sp": "BB", "moody": "Ba2", "fitch": "BB"}

@@ -21,7 +21,13 @@ from issuer_opportunity_screener.sources.base import (
 
 log = get_logger("fixture")
 
-FIXTURE_BRAZIL = BrazilBenchmark(cds_5y_bps=180.0, z_spread_bps=195.0, rating_sp="BB")
+FIXTURE_BRAZIL = BrazilBenchmark(
+    cds_5y_bps=180.0,
+    z_spread_bps=195.0,
+    rating_sp="BB",
+    bond_security="BRAZIL 4.75 06/15/31 Govt",
+    ratings={"sp": "BB", "moody": "Ba2", "fitch": "BB"},
+)
 FIXTURE_AS_OF = dt.datetime(2026, 7, 15, 12, 0, 0)
 
 _RATINGS = ["BB+", "BB", "BB-", "B+"]
@@ -45,7 +51,7 @@ class FixtureSource:
 
             base = 90.0 + (idx * 37) % 320  # 90..409 bps, deterministic
             if role == 5:
-                base = 140.0  # tighter than Brazil's 180
+                base = 165.0  # within Brazil's 20 bps tolerance: the edge case
             rating = "BBB+" if role == 5 else _RATINGS[idx % len(_RATINGS)]
 
             credit = IssuerCredit(
