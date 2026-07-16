@@ -222,12 +222,14 @@ def test_parsekeyable_converts_instrument_result_suffix():
     assert parsekeyable(" T 3.5 09/15/53<corp> ") == "T 3.5 09/15/53 Corp"
 
 
-def test_security_matches_ticker():
-    from issuer_opportunity_screener.sources.bloomberg import security_matches_ticker
+def test_same_credit_family_uses_bloomberg_ticker_field():
+    from issuer_opportunity_screener.sources.bloomberg import same_credit_family
 
-    assert security_matches_ticker("AMD 4.393 06/01/46 Corp", "AMD") is True
-    assert security_matches_ticker("AMDX 5 01/01/30 Corp", "AMD") is False
-    assert security_matches_ticker("GM Financial 5.4 04/01/48 Corp", "GM") is True
+    assert same_credit_family("AMD", "AMD") is True
+    assert same_credit_family("amd ", "AMD") is True
+    assert same_credit_family("AMDX", "AMD") is False
+    assert same_credit_family(None, "AMD") is True  # missing TICKER never disqualifies
+    assert same_credit_family("", "AMD") is True
 
 
 def test_rank_is_senior_unsecured_variants():
@@ -388,3 +390,25 @@ def test_select_benchmark_bond_ignores_payment_rank():
     picked = select_benchmark_bond(candidates, as_of=AS_OF)
     assert picked["security"] == "NORANK"
     assert select_benchmark_bond([bond("SHORT", 1.0)], as_of=AS_OF) is None
+
+
+def test_select_bond_rejects_foreign_credit_family():
+    from issuer_opportunity_screener.sources.bloomberg import select_bond as select
+
+    foreign = dict(bond("EJ12345 Corp", 5.0), ticker_field="XRXFAKE")
+    own = dict(bond("EJ99999 Corp", 6.0), ticker_field="AMD")
+    unknown = dict(bond("EK55555 Corp", 7.0))  # no TICKER field, kept
+    picked = select([foreign, own, unknown], as_of=AS_OF, family_ticker="AMD")
+    assert picked["security"] == "EJ99999 Corp"
+    assert select([foreign], as_of=AS_OF, family_ticker="AMD") is None
+    # without family_ticker the check is off (back-compat)
+    assert select([foreign], as_of=AS_OF)["security"] == "EJ12345 Corp"
+
+
+def test_rejection_summary_counts_foreign_family_and_empty_rows():
+    from issuer_opportunity_screener.sources.bloomberg import rejection_summary
+
+    foreign = dict(bond("A Corp", 5.0), ticker_field="OTHER")
+    summary = rejection_summary([foreign], as_of=AS_OF, family_ticker="AMD")
+    assert "1 different credit family" in summary
+    assert "0 refdata rows returned" in rejection_summary([], as_of=AS_OF)

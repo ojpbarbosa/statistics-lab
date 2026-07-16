@@ -34,7 +34,7 @@ REFDATA_FIELDS = [
     "PX_LAST",
     "CHG_PCT_3M", "CHG_PCT_1YR", "TOT_BUY_REC", "TOT_SELL_REC", "TOT_HOLD_REC",
 ]
-BOND_FIELDS = ["CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "YAS_ZSPREAD", "PX_LAST", "CPN"]
+BOND_FIELDS = ["TICKER", "CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "YAS_ZSPREAD", "PX_LAST", "CPN"]
 BOND_HISTORY_FIELD = "Z_SPRD_MID"  # bond PX_LAST is a price, not a spread
 RATING_FIELD_TO_AGENCY = {
     "RTG_MOODY": "moody",
@@ -107,9 +107,13 @@ def parsekeyable(instrument_result) -> str:
     return security
 
 
-def security_matches_ticker(security: str, ticker: str) -> bool:
-    """Keep only lookup results that belong to the issuer's credit family."""
-    return security.upper().startswith(f"{ticker.upper()} ")
+def same_credit_family(ticker_field, issuer_ticker: str) -> bool:
+    """Bond belongs to the issuer when Bloomberg's TICKER field matches.
+    A missing TICKER never disqualifies (benefit of the doubt; other
+    eligibility checks still apply)."""
+    if ticker_field is None or not str(ticker_field).strip():
+        return True
+    return str(ticker_field).strip().upper() == issuer_ticker.strip().upper()
 
 
 def cds_ticker(issuer_ticker: str) -> str:
@@ -193,10 +197,13 @@ def _rejection_reason(
     currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES,
     tenor_min: float = TENOR_MIN_YEARS,
     tenor_max: float = TENOR_MAX_YEARS,
+    family_ticker: str | None = None,
 ) -> str:
     """Why this candidate fails eligibility; 'eligible' when it doesn't."""
     if all(candidate.get(key) is None for key in _CANDIDATE_DATA_KEYS):
         return "empty refdata row"
+    if family_ticker and not same_credit_family(candidate.get("ticker_field"), family_ticker):
+        return "different credit family"
     if candidate.get("crncy") not in currencies:
         return f"non-{'/'.join(currencies)}"
     if not rank_is_senior_unsecured(candidate.get("payment_rank")):
@@ -216,6 +223,7 @@ def rejection_summary(
     currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES,
     tenor_min: float = TENOR_MIN_YEARS,
     tenor_max: float = TENOR_MAX_YEARS,
+    family_ticker: str | None = None,
 ) -> str:
     """Per-reason counts plus the most common rejected ranks, so a
     zero-eligible run self-diagnosing from the quality notes alone."""
@@ -224,7 +232,7 @@ def rejection_summary(
     reasons: Counter[str] = Counter()
     rejected_ranks: Counter[str] = Counter()
     for candidate in candidates:
-        reason = _rejection_reason(candidate, as_of, currencies, tenor_min, tenor_max)
+        reason = _rejection_reason(candidate, as_of, currencies, tenor_min, tenor_max, family_ticker)
         reasons[reason] += 1
         if reason == "rank mismatch":
             rejected_ranks[str(candidate.get("payment_rank"))] += 1
@@ -232,7 +240,7 @@ def rejection_summary(
     if rejected_ranks:
         top = ", ".join(f"{rank!r}×{count}" for rank, count in rejected_ranks.most_common(3))
         parts.append(f"top rejected ranks: {top}")
-    return "; ".join(parts) if parts else "no candidates"
+    return "; ".join(parts) if parts else "0 refdata rows returned; run IOS_LOG_LEVEL=trace and check securityError/responseError lines"
 
 
 def select_benchmark_bond(candidates: list[dict], as_of: dt.date) -> dict | None:
@@ -258,13 +266,14 @@ def select_bond(
     currencies: tuple[str, ...] = DEFAULT_BOND_CURRENCIES,
     tenor_min: float = TENOR_MIN_YEARS,
     tenor_max: float = TENOR_MAX_YEARS,
+    family_ticker: str | None = None,
 ) -> dict | None:
     """Pick the best eligible bond: preferred currency first, then closest to
     the 5y point (clamped into the tenor window), then largest outstanding."""
     target = min(max(5.0, tenor_min), tenor_max)
     eligible = []
     for c in candidates:
-        if _rejection_reason(c, as_of, currencies, tenor_min, tenor_max) != "eligible":
+        if _rejection_reason(c, as_of, currencies, tenor_min, tenor_max, family_ticker) != "eligible":
             continue
         years = (c["maturity"] - as_of).days / 365.25
         eligible.append(
@@ -348,6 +357,9 @@ class BloombergSource:
         while True:
             event = session.nextEvent(30_000)
             for msg in event:
+                if msg.hasElement("responseError"):
+                    log.warn(f"refdata responseError: {msg.getElement('responseError')}")
+                    continue
                 if not msg.hasElement("securityData"):
                     continue
                 data = msg.getElement("securityData")
@@ -355,13 +367,18 @@ class BloombergSource:
                     row = data.getValueAsElement(i)
                     security = row.getElementAsString("security")
                     values: dict = {}
-                    field_data = row.getElement("fieldData")
-                    for j in range(field_data.numElements()):
-                        el = field_data.getElement(j)
-                        try:
-                            values[str(el.name())] = flatten_field_element(el)
-                        except Exception:  # noqa: BLE001: one bad field must not kill the request
-                            continue
+                    if row.hasElement("securityError"):
+                        log.trace(f"refdata securityError for {security!r}")
+                        out[security] = values
+                        continue
+                    if row.hasElement("fieldData"):
+                        field_data = row.getElement("fieldData")
+                        for j in range(field_data.numElements()):
+                            el = field_data.getElement(j)
+                            try:
+                                values[str(el.name())] = flatten_field_element(el)
+                            except Exception:  # noqa: BLE001: one bad field must not kill the request
+                                continue
                     out[security] = values
             if event.eventType() == blpapi.Event.RESPONSE:
                 break
@@ -413,11 +430,20 @@ class BloombergSource:
         log.step(f"fetching Brazil benchmark ({BRAZIL_CDS_TICKER})")
         try:
             brazil_row = self._reference_fields(session, [BRAZIL_CDS_TICKER], ["PX_LAST"]).get(BRAZIL_CDS_TICKER, {})
-            brazil_cds = float(brazil_row["PX_LAST"]) if "PX_LAST" in brazil_row else BRAZIL_FALLBACK.cds_5y_bps
-            if "PX_LAST" in brazil_row:
-                log.info(f"Brazil 5Y CDS: {brazil_cds:.1f} bps")
-            else:
+            brazil_cds = float(brazil_row["PX_LAST"]) if "PX_LAST" in brazil_row else None
+            if brazil_cds is None:
+                _, brazil_curve = split_cds_curve(self._instrument_lookup(session, "BRAZIL"))
+                brazil_cds_security = pick_cds_5y(brazil_curve, "BRAZIL", self.currencies)
+                if brazil_cds_security:
+                    lookup_row = self._reference_fields(session, [brazil_cds_security], ["PX_LAST"]).get(brazil_cds_security, {})
+                    if "PX_LAST" in lookup_row:
+                        brazil_cds = float(lookup_row["PX_LAST"])
+                        log.info(f"Brazil CDS resolved via instruments lookup: {brazil_cds_security}")
+            if brazil_cds is None:
+                brazil_cds = BRAZIL_FALLBACK.cds_5y_bps
                 log.warn(f"Brazil CDS quote missing; using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
+            else:
+                log.info(f"Brazil 5Y CDS: {brazil_cds:.1f} bps")
 
             brazil_bond = None
             try:
@@ -514,12 +540,13 @@ class BloombergSource:
                         currencies=self.currencies,
                         tenor_min=self.tenor_min,
                         tenor_max=self.tenor_max,
+                        family_ticker=issuer.ticker,
                     )
                     if bond is None:
                         bond_note = (
                             f"bond discovery: {len(bond_securities)} bond securities "
                             f"({len(cds_curve)} CDS curve items excluded), 0 selected: "
-                            f"{rejection_summary(candidates, as_of.date(), self.currencies, self.tenor_min, self.tenor_max)}"
+                            f"{rejection_summary(candidates, as_of.date(), self.currencies, self.tenor_min, self.tenor_max, issuer.ticker)}"
                         )
                         log.warn(f"{issuer.ticker}: {bond_note}")
                     elif bond.get("crncy") and bond["crncy"] != "USD":
@@ -618,20 +645,27 @@ class BloombergSource:
                 rows = msg.getElement("results")
                 for i in range(rows.numValues()):
                     row = rows.getValueAsElement(i)
-                    security = parsekeyable(row.getElementAsString("security"))
-                    if security_matches_ticker(security, ticker):
-                        results.append(security)
+                    # No ticker-prefix filter here: bond results often come back
+                    # as ID-style keys (e.g. 'EJ682107 Corp'); the credit-family
+                    # check happens after refdata via the TICKER field.
+                    results.append(parsekeyable(row.getElementAsString("security")))
             if event.eventType() == blpapi.Event.RESPONSE:
                 break
         return results
 
     def _discover_corp_securities(self, session, equity_security: str, ticker: str) -> tuple[list[str], list[str]]:
         """Discover the issuer's corp securities and split (bonds, cds_curve).
-        BOND_CHAIN first; //blp/instruments fallback (which mixes in the CDS
-        curve, hence the split)."""
-        chain_rows = self._reference_fields(session, [equity_security], ["BOND_CHAIN"])
-        chain = chain_rows.get(equity_security, {}).get("BOND_CHAIN") or []
-        securities = [chain_security(item) for item in chain]
+        BOND_CHAIN on the equity, then on the '{ticker} Corp' company shell,
+        then the //blp/instruments lookup (which mixes in the CDS curve,
+        hence the split)."""
+        securities: list[str] = []
+        for chain_source in (equity_security, f"{ticker} Corp"):
+            chain_rows = self._reference_fields(session, [chain_source], ["BOND_CHAIN"])
+            chain = chain_rows.get(chain_source, {}).get("BOND_CHAIN") or []
+            if chain:
+                log.trace(f"{ticker}: BOND_CHAIN on {chain_source!r} returned {len(chain)} items")
+                securities = [chain_security(item) for item in chain]
+                break
         if not securities:
             log.trace(f"{ticker}: BOND_CHAIN empty; falling back to //blp/instruments lookup")
             securities = self._instrument_lookup(session, ticker)
@@ -648,6 +682,7 @@ class BloombergSource:
         for security, values in rows.items():
             candidate = {
                 "security": security,
+                "ticker_field": values.get("TICKER"),
                 "crncy": values.get("CRNCY"),
                 "payment_rank": values.get("PAYMENT_RANK"),
                 "maturity": as_date(values.get("MATURITY")),
