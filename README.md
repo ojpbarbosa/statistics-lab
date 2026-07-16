@@ -30,6 +30,7 @@ poetry run streamlit run src/issuer_opportunity_screener/app.py
 | `IOS_BB_HOST` | `localhost` | Bloomberg API host (e.g. a remote Terminal PC or B-PIPE endpoint) |
 | `IOS_BB_PORT` | `8194` | Bloomberg API port |
 | `IOS_LOG_LEVEL` | `step` | Terminal log verbosity: `trace`, `step`, `info`, `warn`, `error` (`success` logs at `info` rank) |
+| `IOS_AUTO_QUARANTINE` | unset | `1` moves unscored names to `data/universe_quarantine.csv` after each live refresh (keep off until data access is unblocked) |
 | `IOS_BOND_CURRENCIES` | `USD` | Allowed bond currencies in preference order, e.g. `USD,EUR` (earlier wins when both are eligible; non-USD selections carry an "indicative only" quality note) |
 | `IOS_TENOR_MIN_YEARS` / `IOS_TENOR_MAX_YEARS` | `3` / `10` | Bond maturity window for eligibility |
 
@@ -53,6 +54,17 @@ selection, and history fetch during a refresh.
 The dashboard defines both a terminal-dark and a paper-light theme
 (`[theme.dark]` / `[theme.light]`); it follows your OS/browser color scheme
 and the ⋮ → Settings toggle. Chart colors are validated for both modes.
+
+## Reports and universe lifecycle
+
+- Snapshot report (screening summary, edge cases, movers, data quality):
+  download from the Data quality tab or run
+  `poetry run python -m issuer_opportunity_screener.reports` (writes to `reports/`).
+- Movers tab compares any two snapshots: spread deltas, viability flips,
+  tier changes, new and dropped names, plus rule-based callouts.
+- Add names via the sidebar form; quarantine unscored names (with reasons)
+  and restore them from the Data quality tab. The final report skeleton
+  lives at `docs/report/final_report.typ`.
 
 ## Bloomberg workflow review
 

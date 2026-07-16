@@ -161,3 +161,6 @@ cython_debug/
 
 # Issuer Opportunity Screener runtime snapshots
 data/snapshots/
+
+# generated snapshot reports (regenerate via the dashboard or reports CLI)
+reports/

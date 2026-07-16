@@ -67,6 +67,38 @@ def make_source():
     return BloombergSource()
 
 
+def render_add_issuer_form():
+    from issuer_opportunity_screener.universe import BASKETS
+    from issuer_opportunity_screener.universe_admin import append_issuer
+
+    with st.expander("Add a name to the universe"):
+        with st.form("add_issuer", clear_on_submit=True):
+            issuer = st.text_input("Issuer name")
+            ticker = st.text_input("Credit ticker (Bloomberg family ticker)")
+            basket = st.selectbox("Basket", sorted(BASKETS))
+            country = st.text_input("Country")
+            sector = st.text_input("Sector")
+            recognition = st.number_input("Recognition score (0-100)", min_value=0.0, max_value=100.0, value=70.0, step=5.0)
+            internal_rating = st.text_input("Internal rating (optional)")
+            equity_ticker = st.text_input("Equity handle override (optional, e.g. ABI BB Equity)")
+            cds_ticker_override = st.text_input("CDS handle override (optional)")
+            if st.form_submit_button("Add to universe"):
+                try:
+                    append_issuer(
+                        UNIVERSE_PATH,
+                        {
+                            "issuer": issuer, "ticker": ticker, "basket": basket,
+                            "country": country, "sector": sector,
+                            "recognition_score": recognition,
+                            "internal_rating": internal_rating,
+                            "equity_ticker": equity_ticker, "cds_ticker": cds_ticker_override,
+                        },
+                    )
+                    st.success(f"{ticker} added. It enters the screen on the next refresh.")
+                except UniverseError as exc:
+                    st.error(str(exc))
+
+
 def sidebar(snapshot_dirs: list[Path]) -> Path | None:
     with st.sidebar:
         st.header("Data")
@@ -81,6 +113,7 @@ def sidebar(snapshot_dirs: list[Path]) -> Path | None:
                 st.warning("Snapshot for this timestamp already exists; nothing to do.")
             except UniverseError as exc:
                 st.error(str(exc))
+        render_add_issuer_form()
         if not snapshot_dirs:
             return None
         labels = [d.name for d in reversed(snapshot_dirs)]
@@ -381,6 +414,90 @@ def render_issuer_tab(snap: Snapshot, scores: list[IssuerScore]):
         st.info(f"Data quality: {row.quality_notes}")
 
 
+def render_movers_tab(snap: Snapshot, chosen: Path):
+    from issuer_opportunity_screener.insights import build_insights, movers_frame, scored_frames
+
+    others = [d for d in list_snapshots(SNAPSHOTS_ROOT) if d != chosen]
+    if not others:
+        st.info("Movers need at least two snapshots. Refresh again later to compare.")
+        return
+    labels = [d.name for d in reversed(others)]
+    baseline_name = st.selectbox("Compare against snapshot", labels, index=0)
+    baseline = load_snapshot(SNAPSHOTS_ROOT / baseline_name)
+
+    frame_now, frame_then, _, _ = scored_frames(snap, baseline)
+    movers = movers_frame(frame_now, frame_then)
+    insights = build_insights(movers, snap, baseline_name)
+
+    if insights:
+        st.subheader("Callouts")
+        for insight in insights[:20]:
+            st.markdown(f"- {insight.message}")
+    else:
+        st.caption("No notable moves between the two snapshots.")
+
+    st.subheader("All movers")
+    st.dataframe(
+        movers,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "issuer": st.column_config.TextColumn("Issuer"),
+            "ticker": st.column_config.TextColumn("Ticker"),
+            "basket": st.column_config.TextColumn("Basket"),
+            "spread_then": st.column_config.NumberColumn("Then", format="%.0f bps"),
+            "spread_now": st.column_config.NumberColumn("Now", format="%.0f bps"),
+            "delta_bps": st.column_config.NumberColumn("Delta", format="%+.0f bps"),
+            "vs_brazil_then": st.column_config.NumberColumn("vs Brazil then", format="%+.0f bps"),
+            "vs_brazil_now": st.column_config.NumberColumn("vs Brazil now", format="%+.0f bps"),
+            "viable_then": st.column_config.CheckboxColumn("Viable then"),
+            "viable_now": st.column_config.CheckboxColumn("Viable now"),
+            "composite_then": st.column_config.NumberColumn("Comp. then", format="%.1f"),
+            "composite_now": st.column_config.NumberColumn("Comp. now", format="%.1f"),
+            "tier_then": st.column_config.TextColumn("Tier then", width="small"),
+            "tier_now": st.column_config.TextColumn("Tier now", width="small"),
+            "status": st.column_config.TextColumn("Status", width="small"),
+        },
+    )
+
+
+def render_universe_admin(snap: Snapshot, scores: list[IssuerScore]):
+    from issuer_opportunity_screener.universe_admin import (
+        quarantine_unscored,
+        restore_issuer,
+        unscored_reasons,
+    )
+
+    quarantine_path = DATA_ROOT / "universe_quarantine.csv"
+    reasons = unscored_reasons(snap, scores)
+    st.subheader("Unscored names")
+    if not reasons:
+        st.caption("Every universe name scored in this snapshot.")
+    else:
+        st.dataframe(
+            pd.DataFrame([{"ticker": t, "reason": r} for t, r in sorted(reasons.items())]),
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "Quarantining moves these names (with reasons) to universe_quarantine.csv so the "
+            "next refresh only fetches names that produce a spread. Restore any name below."
+        )
+        if st.button(f"Quarantine {len(reasons)} unscored name(s)"):
+            moved = quarantine_unscored(UNIVERSE_PATH, quarantine_path, snap, scores)
+            st.success(f"Moved {len(moved)} name(s) to quarantine. They leave the screen on the next refresh.")
+
+    if quarantine_path.exists():
+        quarantined = pd.read_csv(quarantine_path)
+        if not quarantined.empty:
+            st.subheader("Quarantined names")
+            st.dataframe(quarantined, width="stretch", hide_index=True)
+            restore_choice = st.selectbox("Restore a name", ["(choose)"] + sorted(quarantined.ticker), index=0)
+            if restore_choice != "(choose)" and st.button(f"Restore {restore_choice}"):
+                restore_issuer(UNIVERSE_PATH, quarantine_path, restore_choice)
+                st.success(f"{restore_choice} restored to the universe.")
+
+
 def render_quality_tab(snap: Snapshot):
     manifest = snap.manifest
     st.metric(
@@ -437,17 +554,34 @@ def main():
     if not scores:
         st.warning("No scorable issuers in this snapshot. Check the Data quality tab.")
         render_quality_tab(snap)
+        render_universe_admin(snap, scores)
         return
     frame = screen_frame(snap, scores)
     render_kpis(snap, frame)
 
-    tab_screen, tab_issuer, tab_quality = st.tabs(["Screen", "Issuer detail", "Data quality"])
+    tab_screen, tab_issuer, tab_movers, tab_quality = st.tabs(
+        ["Screen", "Issuer detail", "Movers", "Data quality"]
+    )
     with tab_screen:
         render_screen_tab(snap, frame)
     with tab_issuer:
         render_issuer_tab(snap, scores)
+    with tab_movers:
+        render_movers_tab(snap, chosen)
     with tab_quality:
         render_quality_tab(snap)
+        render_universe_admin(snap, scores)
+
+        from issuer_opportunity_screener.reports import build_report
+
+        others = [d for d in list_snapshots(SNAPSHOTS_ROOT) if d != chosen]
+        baseline = load_snapshot(others[-1]) if others else None
+        st.download_button(
+            "Download snapshot report (Markdown)",
+            build_report(snap, baseline),
+            file_name=f"snapshot_report_{chosen.name}.md",
+            mime="text/markdown",
+        )
 
 
 main()
