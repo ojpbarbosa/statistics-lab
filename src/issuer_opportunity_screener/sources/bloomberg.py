@@ -34,7 +34,11 @@ REFDATA_FIELDS = [
     "PX_LAST",
     "CHG_PCT_3M", "CHG_PCT_1YR", "TOT_BUY_REC", "TOT_SELL_REC", "TOT_HOLD_REC",
 ]
-BOND_FIELDS = ["TICKER", "CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "YAS_ZSPREAD", "PX_LAST", "CPN"]
+# Bond fields are requested in two stages to stay under Bloomberg's workflow
+# review radar: cheap static/reference fields for ALL candidates, pricing
+# (calculated) fields ONLY for the single selected bond per issuer.
+BOND_STATIC_FIELDS = ["TICKER", "CRNCY", "PAYMENT_RANK", "MATURITY", "AMT_OUTSTANDING", "CPN"]
+BOND_PRICING_FIELDS = ["YAS_ZSPREAD", "PX_LAST"]
 BOND_HISTORY_FIELD = "Z_SPRD_MID"  # bond PX_LAST is a price, not a spread
 RATING_FIELD_TO_AGENCY = {
     "RTG_MOODY": "moody",
@@ -326,6 +330,7 @@ class BloombergSource:
         self.port = port if port is not None else int(os.environ.get("IOS_BB_PORT", "8194"))
         self.currencies = bond_currencies_from_env()
         self.tenor_min, self.tenor_max = tenor_window_from_env()
+        self._workflow_review_hit = False
 
     # --- blpapi boundary (untested; verified live on the Terminal machine) ---
 
@@ -358,7 +363,18 @@ class BloombergSource:
             event = session.nextEvent(30_000)
             for msg in event:
                 if msg.hasElement("responseError"):
-                    log.warn(f"refdata responseError: {msg.getElement('responseError')}")
+                    error_text = str(msg.getElement("responseError"))
+                    log.warn(f"refdata responseError: {error_text}")
+                    if "WORKFLOW_REVIEW_NEEDED" in error_text and not self._workflow_review_hit:
+                        self._workflow_review_hit = True
+                        log.error(
+                            "Bloomberg has gated this request pattern behind a workflow review "
+                            "(category LIMIT, subcategory WORKFLOW_REVIEW_NEEDED). This is an "
+                            "entitlement decision, not a code failure: contact your Bloomberg "
+                            "representative or HELP HELP, cite the nid from the message above, "
+                            "and describe the workflow (internal desk screening, display only, "
+                            "no redistribution) to get it approved."
+                        )
                     continue
                 if not msg.hasElement("securityData"):
                     continue
@@ -455,6 +471,8 @@ class BloombergSource:
                 brazil_bond = select_benchmark_bond(
                     self._bond_refdata(session, govt_securities, "BRAZIL"), as_of=as_of.date()
                 )
+                if brazil_bond is not None:
+                    brazil_bond = self._price_bond(session, brazil_bond, "BRAZIL")
             except Exception as exc:  # noqa: BLE001: bond discovery is optional for the benchmark
                 log.warn(f"Brazil benchmark bond discovery failed: {exc}")
             if brazil_bond is not None:
@@ -548,13 +566,19 @@ class BloombergSource:
                             f"({len(cds_curve)} CDS curve items excluded), 0 selected: "
                             f"{rejection_summary(candidates, as_of.date(), self.currencies, self.tenor_min, self.tenor_max, issuer.ticker)}"
                         )
+                        if self._workflow_review_hit and not candidates:
+                            bond_note += (
+                                "; Bloomberg workflow review is blocking bond requests "
+                                "(ask your Bloomberg rep to approve, nid in the logs)"
+                            )
                         log.warn(f"{issuer.ticker}: {bond_note}")
-                    elif bond.get("crncy") and bond["crncy"] != "USD":
-                        bond_note = (
-                            f"selected bond is {bond['crncy']}-denominated; "
-                            f"z-spread vs the Brazil USD benchmark is indicative only"
-                        )
                     else:
+                        bond = self._price_bond(session, bond, issuer.ticker)
+                        if bond.get("crncy") and bond["crncy"] != "USD":
+                            bond_note = (
+                                f"selected bond is {bond['crncy']}-denominated; "
+                                f"z-spread vs the Brazil USD benchmark is indicative only"
+                            )
                         log.trace(
                             f"{issuer.ticker}: bond {bond.get('security')} "
                             f"(z-spread {bond.get('z_spread_bps')}, {len(bond_securities)} discovered, {len(candidates)} resolved)"
@@ -672,12 +696,13 @@ class BloombergSource:
         return split_cds_curve(securities)
 
     def _bond_refdata(self, session, securities: list[str], ticker: str) -> list[dict]:
-        """Reference data for discovered bond securities, in polite batches."""
+        """Static reference data for discovered bond securities, in polite
+        batches. Pricing fields are fetched later, for the selected bond only."""
         if not securities:
             return []
         rows: dict[str, dict] = {}
         for start in range(0, len(securities), 100):
-            rows.update(self._reference_fields(session, securities[start : start + 100], BOND_FIELDS))
+            rows.update(self._reference_fields(session, securities[start : start + 100], BOND_STATIC_FIELDS))
         candidates = []
         for security, values in rows.items():
             candidate = {
@@ -687,10 +712,20 @@ class BloombergSource:
                 "payment_rank": values.get("PAYMENT_RANK"),
                 "maturity": as_date(values.get("MATURITY")),
                 "amt_outstanding": values.get("AMT_OUTSTANDING"),
-                "z_spread_bps": values.get("YAS_ZSPREAD"),
-                "last_price": values.get("PX_LAST"),
+                "z_spread_bps": None,  # filled by _price_bond for the winner only
+                "last_price": None,
                 "coupon": values.get("CPN"),
             }
             log.trace(f"{ticker}: bond candidate {candidate}")
             candidates.append(candidate)
         return candidates
+
+    def _price_bond(self, session, bond: dict, ticker: str) -> dict:
+        """Fetch pricing for the single selected bond."""
+        security = bond["security"]
+        pricing = self._reference_fields(session, [security], BOND_PRICING_FIELDS).get(security, {})
+        bond["z_spread_bps"] = pricing.get("YAS_ZSPREAD")
+        bond["last_price"] = pricing.get("PX_LAST")
+        if bond["z_spread_bps"] is None:
+            log.warn(f"{ticker}: selected bond {security} returned no z-spread")
+        return bond

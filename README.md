@@ -54,6 +54,17 @@ The dashboard defines both a terminal-dark and a paper-light theme
 (`[theme.dark]` / `[theme.light]`); it follows your OS/browser color scheme
 and the ⋮ → Settings toggle. Chart colors are validated for both modes.
 
+## Bloomberg workflow review
+
+Bulk bond requests over the Desktop API can be gated by Bloomberg with
+`responseError` category `LIMIT`, subcategory `WORKFLOW_REVIEW_NEEDED`.
+That is an entitlement decision on Bloomberg's side, not an app failure:
+contact your Bloomberg representative (or `HELP HELP`), cite the `nid`
+from the log message, and describe the workflow (internal desk screening,
+display only, no redistribution). The app minimizes the gated surface by
+requesting static reference fields for candidates and pricing fields for
+the single selected bond per issuer only.
+
 ## Desk rules encoded
 
 - CDS-first: 5Y CDS preferred, bond z-spread fallback.

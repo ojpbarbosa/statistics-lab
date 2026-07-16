@@ -412,3 +412,11 @@ def test_rejection_summary_counts_foreign_family_and_empty_rows():
     summary = rejection_summary([foreign], as_of=AS_OF, family_ticker="AMD")
     assert "1 different credit family" in summary
     assert "0 refdata rows returned" in rejection_summary([], as_of=AS_OF)
+
+
+def test_select_bond_works_without_pricing_fields():
+    from issuer_opportunity_screener.sources.bloomberg import select_bond as select
+
+    static_only = dict(bond("STATIC", 5.0), z_spread_bps=None, last_price=None)
+    picked = select([static_only], as_of=AS_OF, family_ticker="AMD")
+    assert picked["security"] == "STATIC"
