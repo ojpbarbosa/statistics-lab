@@ -1,0 +1,36 @@
+[project]
+name = "issuer-opportunity-screener"
+version = "0.2.0"
+description = "A practical screening tool to help identify and prioritize potential corporate note issuance candidates using credit, spread, and market-based signals."
+authors = [
+    {name = "Joao Barbosa", email = "joao.fbarbosa@xpi.us"}
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pandas (>=3.0.3,<4.0.0)",
+    "numpy (>=2.5.1,<3.0.0)",
+    "blpapi (>=3.26.5.1,<4.0.0.0)",
+    "streamlit (>=1.45,<2.0)",
+    "pyarrow (>=17.0,<30.0)",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{include = "issuer_opportunity_screener", from = "src"}]
+
+[[tool.poetry.source]]
+name = "bloomberg"
+url = "https://blpapi.bloomberg.com/repository/releases/python/simple"
+priority = "supplemental"
+
+[tool.poetry.dependencies]
+blpapi = {source = "bloomberg"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
