@@ -17,7 +17,7 @@
   title: "Progresso Intermediário",
 )
 
-_Projeto de verão. Período coberto: 09/07/2026 a 21/07/2026 (fim da semana 2 de 4)._
+_Projeto de verão. Período coberto: 09/07/2026 a 21/07/2026 (semana 2 de 4)._
 
 == Objetivo e visão geral do status
 

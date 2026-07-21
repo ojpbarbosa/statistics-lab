@@ -17,7 +17,7 @@
   title: "Midterm Progress",
 )
 
-_Summer project. Period covered: 2026-07-09 to 2026-07-21 (end of week 2 of 4)._
+_Summer project. Period covered: 2026-07-09 to 2026-07-21 (week 2 of 4)._
 
 == Objective and status at a glance
 
