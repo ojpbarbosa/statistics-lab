@@ -1,17 +1,23 @@
-#set page(margin: (x: 2.2cm, y: 2.2cm))
-#set text(font: "Libertinus Serif", size: 10.5pt, lang: "pt")
-#set par(justify: true)
-#show heading.where(level: 1): set text(size: 15pt)
-#show heading.where(level: 2): it => block(above: 1.4em, below: 0.8em)[
-  #set text(size: 12pt)
-  #it.body
-  #v(-0.6em)
-  #line(length: 100%, stroke: 0.5pt + luma(160))
-]
+#set text(font: "New Computer Modern", lang: "pt")
+#import "@preview/problemst:0.1.2": pset
+#import "@preview/intextual:0.1.0": eqref, flushl, flushr, intertext, intertext-rule, tag
+#import "@preview/frame-it:1.2.0": *
+#import "@preview/ctheorems:1.1.3": *
+#import "@preview/numbly:0.1.0": numbly
+#import "@preview/quonom:0.1.0": manual-synthdiv, synthdiv
 
-= Issuer Opportunity Screener: Relatório Intermediário de Progresso
+#let lemma = frame("Lemma", blue)
+#let proof = thmproof("proof", "Proof")
+#show: frame-style(styles.thmbox)
+#show: intertext-rule
 
-_Projeto de verão, COE Credit Trading. Período coberto: 09/07/2026 a 20/07/2026 (fim da semana 2 de 4)._
+#show: pset.with(
+  class: "XP :: Issuer Opportunity Screener",
+  student: "João Pedro Ferreira Barbosa",
+  title: "Progresso Intermediário",
+)
+
+_Projeto de verão. Período coberto: 09/07/2026 a 21/07/2026 (fim da semana 2 de 4)._
 
 == Objetivo e visão geral do status
 
@@ -30,7 +36,7 @@ O projeto constrói um framework inicial de screening para identificar nomes cor
   [Relatório final e apresentação à mesa], [Esqueleto redigido, resultados aguardando dados],
 )
 
-O framework está totalmente operacional de ponta a ponta. O único bloqueio aberto é externo: uma revisão de entitlement da Bloomberg que trava requisições de dados de bonds em lote pela Desktop API. Dois caminhos de mitigação já estão construídos (detalhados em Limitações).
+O framework está totalmente operacional de ponta a ponta. O único bloqueio aberto é externo: uma revisão de entitlement da Bloomberg que trava requisições de dados de bonds em lote pela Desktop API. Três rotas alternativas de dados já estão em andamento (detalhadas em Limitações).
 
 == O que já foi entregue
 
@@ -48,19 +54,19 @@ O framework está totalmente operacional de ponta a ponta. O único bloqueio abe
 
 == Limitações e bloqueios
 
-- *Entitlement Bloomberg (bloqueio principal, externo).* Requisições em lote de referência e preço de bonds pela Desktop API estão travadas pela Bloomberg (responseError LIMIT / WORKFLOW_REVIEW_NEEDED). Há chamado aberto com o representante Bloomberg. Mitigações já implementadas: a superfície de requisições foi minimizada (campos estáticos para candidatos, preço apenas para o único bond selecionado por emissor) e foi construída uma rota alternativa via export BQuant, que roda o screening de bonds no servidor sob entitlements diferentes e alimenta exatamente o mesmo pipeline. A rota BQuant ainda precisa de uma rodada de validação na máquina com Terminal.
-- *Mapeamento de handles.* Os tickers do universo são tickers de família de crédito em melhor esforço; listagens fora dos EUA e convenções de CDS precisam de overrides confirmados pela mesa. A cobertura melhora conforme esses campos são preenchidos.
+- *Entitlement Bloomberg (bloqueio principal, externo).* Requisições em lote de referência e preço de bonds pela Desktop API estão travadas pela Bloomberg (responseError LIMIT / WORKFLOW_REVIEW_NEEDED). O account manager foi contatado e ainda não respondeu. Rotas já em andamento: a superfície de requisições foi minimizada (campos estáticos para candidatos, preço apenas para o único bond selecionado por emissor); a rota de export BQuant roda o screening de bonds no servidor sob entitlements diferentes (validação pendente); e a API interna Hermes já alimenta dados EoD de bonds por ISIN, com um endpoint de CDS no servidor em conversa com o responsável. O acesso à Markit Partners também foi solicitado para dados adicionais de crédito.
+- *Mapeamento de handles.* Os tickers do universo são tickers de família de crédito em melhor esforço; listagens fora dos EUA, convenções de CDS e ISINs para o Hermes precisam de valores confirmados pela mesa. A cobertura melhora conforme esses campos são preenchidos.
 - *Um bond por emissor.* Formato de curva e características específicas de emissão (callables, sinking funds, descontos profundos) estão fora de escopo. Seleções suspeitas (z-spread acima de 1000 bps ou preço abaixo de 50, outliers tipo DISH) são sinalizadas para revisão separada, não ranqueadas silenciosamente.
-- *Comparabilidade.* Os spreads são comparados dentro de um escopo fixo sênior unsecured USD de 3 a 10 anos; ajustes mais finos de maturidade, setor e liquidez são um refinamento candidato, ainda não implementado. Bonds fora de USD são marcados como apenas indicativos.
+- *Comparabilidade.* Os spreads são comparados dentro de um escopo fixo sênior unsecured USD de 3 a 10 anos; ajustes mais finos de maturidade, setor e liquidez são um refinamento candidato, ainda não implementado. Bonds fora de USD são marcados como apenas indicativos, e spreads derivados do Hermes são proxies de G-spread rotulados como tal.
 - *Score de reconhecimento é subjetivo.* Definido pela mesa, em escala documentada de 0 a 100; um proxy medido (calor de mídia) foi conscientemente adiado.
 - *Lacunas de rating.* Quando nenhum provedor externo resolve, a viabilidade usa o rating interno da mesa como fallback e rotula o resultado como provisório.
 
 == O que falta (semanas 3 e 4)
 
-+ Destravar os dados completos: validar a rota de export BQuant no Terminal e/ou encerrar a revisão de workflow da Bloomberg; depois rodar o universo completo de 125 nomes e gravar o primeiro snapshot completo.
++ Destravar os dados completos: validar a rota BQuant no Terminal e/ou gravar o primeiro snapshot completo alimentado pelo Hermes; depois rodar o universo completo de 125 nomes.
 + Rodada de resultados: gerar o relatório de snapshot, revisar outliers e preencher a seção de resultados do relatório final (cobertura, distribuição de tiers, principais nomes com justificativa, edge cases, narrativa de movers).
-+ Rodada da mesa no arquivo do universo: ratings internos, overrides de handles para nomes fora dos EUA, confirmação da inclusão de Sr Non-Preferred e da preferência de moeda.
++ Rodada da mesa no arquivo do universo: ratings internos, overrides de handles e ISINs para nomes fora dos EUA, confirmação da inclusão de Sr Non-Preferred e da preferência de moeda.
 + Categorização dos resultados para apresentação: spread alto / risco alto, candidatos equilibrados e edge cases de alta qualidade, em vez de uma lista única ranqueada.
 + Consolidação do relatório final, organização do código para handover e apresentação à mesa.
 
-Em relação ao roadmap de quatro semanas, o projeto está no prazo: as metas das semanas 1 e 2 (ambiente, universo, dataset, limpeza, lógica básica de screening) estão completas, e material da semana 3 (documentação da metodologia, dashboard) foi entregue adiantado. O principal risco de cronograma é o timing externo do entitlement, que a rota BQuant existe para absorver.
+Em relação ao roadmap de quatro semanas, o projeto está no prazo: as metas das semanas 1 e 2 (ambiente, universo, dataset, limpeza, lógica básica de screening) estão completas, e material da semana 3 (documentação da metodologia, dashboard) foi entregue adiantado. O principal risco de cronograma é o timing externo do entitlement, que as rotas BQuant e Hermes existem para absorver.

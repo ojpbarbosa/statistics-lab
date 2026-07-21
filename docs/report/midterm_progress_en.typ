@@ -1,17 +1,23 @@
-#set page(margin: (x: 2.2cm, y: 2.2cm))
-#set text(font: "Libertinus Serif", size: 10.5pt)
-#set par(justify: true)
-#show heading.where(level: 1): set text(size: 15pt)
-#show heading.where(level: 2): it => block(above: 1.4em, below: 0.8em)[
-  #set text(size: 12pt)
-  #it.body
-  #v(-0.6em)
-  #line(length: 100%, stroke: 0.5pt + luma(160))
-]
+#set text(font: "New Computer Modern")
+#import "@preview/problemst:0.1.2": pset
+#import "@preview/intextual:0.1.0": eqref, flushl, flushr, intertext, intertext-rule, tag
+#import "@preview/frame-it:1.2.0": *
+#import "@preview/ctheorems:1.1.3": *
+#import "@preview/numbly:0.1.0": numbly
+#import "@preview/quonom:0.1.0": manual-synthdiv, synthdiv
 
-= Issuer Opportunity Screener: Midterm Progress Report
+#let lemma = frame("Lemma", blue)
+#let proof = thmproof("proof", "Proof")
+#show: frame-style(styles.thmbox)
+#show: intertext-rule
 
-_COE Credit Trading summer project. Period covered: 2026-07-09 to 2026-07-20 (end of week 2 of 4)._
+#show: pset.with(
+  class: "XP :: Issuer Opportunity Screener",
+  student: "João Pedro Ferreira Barbosa",
+  title: "Midterm Progress",
+)
+
+_Summer project. Period covered: 2026-07-09 to 2026-07-21 (end of week 2 of 4)._
 
 == Objective and status at a glance
 
@@ -30,7 +36,7 @@ The project builds an initial screening framework to identify corporate names th
   [Final report and desk presentation], [Skeleton drafted, results pending data],
 )
 
-The framework is fully operational end to end. The single open blocker is external: a Bloomberg entitlement review that gates bulk bond data over the Desktop API. Two mitigation paths are already built (detailed under Limitations).
+The framework is fully operational end to end. The single open blocker is external: a Bloomberg entitlement review that gates bulk bond data over the Desktop API. Three alternative data routes are already in motion (detailed under Limitations).
 
 == What has been delivered
 
@@ -48,19 +54,19 @@ The framework is fully operational end to end. The single open blocker is extern
 
 == Limitations and blockers
 
-- *Bloomberg entitlement (main blocker, external).* Bulk bond reference and pricing requests over the Desktop API are gated by Bloomberg (responseError LIMIT / WORKFLOW_REVIEW_NEEDED). A workflow-review ticket is open with the Bloomberg representative. Mitigations already in place: the request surface was minimized (static fields for candidates, pricing only for the single selected bond per issuer), and an alternative BQuant export route was built, which runs the bond screen server-side under different entitlements and feeds the exact same pipeline. The BQuant route still needs a validation run on the Terminal machine.
-- *Handle mapping.* Universe tickers are best-effort credit-family tickers; non-US listings and CDS conventions need desk-confirmed overrides. Coverage improves as these fill.
+- *Bloomberg entitlement (main blocker, external).* Bulk bond reference and pricing requests over the Desktop API are gated by Bloomberg (responseError LIMIT / WORKFLOW_REVIEW_NEEDED). The account manager was contacted and has not replied yet. Routes already in motion: the request surface was minimized (static fields for candidates, pricing only for the single selected bond per issuer); a BQuant export route runs the bond screen server-side under different entitlements (validation run pending); and the internal Hermes API now feeds bond EoD data by ISIN, with a server-side CDS endpoint under discussion with its owner. Markit Partners access was also requested for additional credit data.
+- *Handle mapping.* Universe tickers are best-effort credit-family tickers; non-US listings, CDS conventions, and Hermes ISINs need desk-confirmed values. Coverage improves as these fill.
 - *One bond per issuer.* Curve shape and issue-specific features (callables, sinking funds, deep discounts) are out of scope. Suspicious selections (z-spread above 1000 bps or price below 50, the DISH-type outliers) are flagged for separate review, not silently ranked.
-- *Comparability.* Spreads are compared within a fixed 3 to 10 year senior unsecured USD scope; finer maturity, sector, and liquidity adjustments are a candidate refinement, not yet implemented. Non-USD bonds are marked indicative only.
+- *Comparability.* Spreads are compared within a fixed 3 to 10 year senior unsecured USD scope; finer maturity, sector, and liquidity adjustments are a candidate refinement, not yet implemented. Non-USD bonds are marked indicative only, and Hermes-derived spreads are G-spread proxies labeled as such.
 - *Recognition score is subjective.* Desk-set, on a documented 0 to 100 scale; a measured proxy (media heat) was consciously deferred.
 - *Ratings gaps.* Where no external provider resolves, viability falls back to the desk internal rating and labels the result as provisional.
 
 == What is left (weeks 3 and 4)
 
-+ Unblock full data: validate the BQuant export route on the Terminal and/or close the Bloomberg workflow review; then run the full 125-name universe and land the first complete snapshot.
++ Unblock full data: validate the BQuant route on the Terminal and/or land the first complete Hermes-fed snapshot; then run the full 125-name universe.
 + Results pass: generate the snapshot report, review outliers, and fill the final report's results section (coverage, tier distribution, top names with rationale, edge cases, movers narrative).
-+ Desk pass on the universe file: internal ratings, handle overrides for non-US names, confirmation of Sr Non-Preferred inclusion and currency preference.
++ Desk pass on the universe file: internal ratings, handle overrides and ISINs for non-US names, confirmation of Sr Non-Preferred inclusion and currency preference.
 + Presentation-ready categorization of results: high spread / high risk, balanced candidates, and high-quality edge cases, instead of a single ranked list.
 + Final report consolidation, code handover organization, and the desk presentation.
 
-Relative to the four-week roadmap, the project is on schedule: weeks 1 and 2 goals (environment, universe, dataset, cleaning, baseline screening logic) are complete, and week 3 material (methodology documentation, dashboard) was delivered early. The main schedule risk is external entitlement timing, which the BQuant route exists to absorb.
+Relative to the four-week roadmap, the project is on schedule: weeks 1 and 2 goals (environment, universe, dataset, cleaning, baseline screening logic) are complete, and week 3 material (methodology documentation, dashboard) was delivered early. The main schedule risk is external entitlement timing, which the BQuant and Hermes routes exist to absorb.
