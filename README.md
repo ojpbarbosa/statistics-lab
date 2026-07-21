@@ -26,8 +26,13 @@ poetry run streamlit run src/issuer_opportunity_screener/app.py
 | Variable | Default | Purpose |
 |---|---|---|
 | `IOS_DATA_DIR` | `data` | Root for `universe.csv` and `snapshots/` |
-| `IOS_SOURCE` | (unset → live Bloomberg) | `fixture` for synthetic data; `bquant` ingests a BQuant export directory |
+| `IOS_SOURCE` | (unset → live Bloomberg) | `fixture` for synthetic data; `bquant` ingests a BQuant export directory; `hermes` pulls bonds from the XP treasury Hermes API |
 | `IOS_BQUANT_EXPORT` | `data/bquant_export` | Directory holding the files written by `bquant/bquant_export.py` |
+| `IOS_HERMES_URL` | `https://hermes-api.xptreasury.com.br` | Hermes base URL |
+| `IOS_HERMES_TOKEN` | (required for `hermes`) | Hermes Bearer token |
+| `IOS_HERMES_LOOKBACK_DAYS` | `30` | Hermes request window; each payload date becomes a spread history point |
+| `IOS_HERMES_BRAZIL_ISIN` | unset | ISIN of the Brazil sovereign USD benchmark bond inside Hermes (required for spreads) |
+| `IOS_HERMES_BRAZIL_SPREAD_BPS` | `180` | Anchor spread assigned to Brazil when deriving the G-spread proxy |
 | `IOS_BB_HOST` | `localhost` | Bloomberg API host (e.g. a remote Terminal PC or B-PIPE endpoint) |
 | `IOS_BB_PORT` | `8194` | Bloomberg API port |
 | `IOS_LOG_LEVEL` | `step` | Terminal log verbosity: `trace`, `step`, `info`, `warn`, `error` (`success` logs at `info` rank) |
@@ -77,6 +82,20 @@ Desktop API workflow-review gate. Flow: upload `bquant/bquant_export.py` and
 Refresh with `IOS_SOURCE=bquant`. The export feeds the exact same snapshot,
 scoring, and dashboard pipeline. BQL item names in the exporter are marked
 where they may need adjustment to your BQL version.
+
+## Hermes route (XP treasury internal API)
+
+Hermes serves historical BBG bond EoD data at
+`GET /v1/BBG/Bonds/{start}/{end}` with a Bearer token, outside the Desktop
+API gate. It carries bonds only (no CDS, ratings, or equity yet; a CDS
+endpoint is being pursued server-side), keyed by ISIN: fill the optional
+`isin` column in `data/universe.csv` with each issuer's representative
+senior unsecured USD bond. Spreads are a G-spread proxy: yields solved from
+clean EoD mids, anchored on the Brazil benchmark bond
+(`IOS_HERMES_BRAZIL_ISIN`) at `IOS_HERMES_BRAZIL_SPREAD_BPS`, which
+preserves the spread-vs-Brazil comparison the viability rule needs. Every
+payload date prices, so a long `IOS_HERMES_LOOKBACK_DAYS` backfills spread
+history. Run with `IOS_SOURCE=hermes`.
 
 ## Bloomberg workflow review
 

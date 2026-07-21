@@ -21,6 +21,7 @@ class UniverseIssuer:
     internal_rating: str | None = None
     equity_ticker: str | None = None  # explicit Bloomberg handle, e.g. "ABI BB Equity"
     cds_ticker: str | None = None  # explicit CDS handle when the derived convention fails
+    isin: str | None = None  # representative bond ISIN, matches ISIN-keyed sources (Hermes)
 
 
 @dataclass

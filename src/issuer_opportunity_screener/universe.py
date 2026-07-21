@@ -62,6 +62,7 @@ def load_universe(path: Path) -> list[UniverseIssuer]:
                 internal_rating=(row.get("internal_rating") or "").strip() or None,
                 equity_ticker=(row.get("equity_ticker") or "").strip() or None,
                 cds_ticker=(row.get("cds_ticker") or "").strip() or None,
+                isin=(row.get("isin") or "").strip() or None,
             )
         )
     if errors:

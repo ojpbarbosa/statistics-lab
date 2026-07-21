@@ -67,6 +67,10 @@ def make_source():
         from issuer_opportunity_screener.sources.bquant_export import BquantExportSource
 
         return BquantExportSource(Path(os.environ.get("IOS_BQUANT_EXPORT", DATA_ROOT / "bquant_export")))
+    if source_kind == "hermes":
+        from issuer_opportunity_screener.sources.hermes import HermesSource
+
+        return HermesSource.from_env()
     from issuer_opportunity_screener.sources.bloomberg import BloombergSource
 
     return BloombergSource()
