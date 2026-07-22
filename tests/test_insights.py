@@ -35,8 +35,10 @@ def make_snapshot(tmp_path, as_of, spreads: dict[str, float | None], name: str):
                 ratings={"sp": "BBB"},
             )
         )
+        # Varying closes, all below the current spread: a real 1y range rather
+        # than a repeated value, which now reads as a stale quote.
         history.extend(
-            HistoryPoint(ticker, as_of.date() - dt.timedelta(weeks=w), spread * 0.7, "cds")
+            HistoryPoint(ticker, as_of.date() - dt.timedelta(weeks=w), spread * (0.60 + 0.01 * (w % 12)), "cds")
             for w in range(1, 21)
         )
     result = FetchResult(as_of=as_of, source="fixture", issuers=issuers, history=history, brazil=BRAZIL)

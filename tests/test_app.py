@@ -35,6 +35,18 @@ def test_app_renders_screen_tab(data_dir):
     assert len(screen) == 10  # 12 universe - 2 fixture failures (roles idx 4, 10)
 
 
+def test_screen_tab_offers_a_flag_filter(data_dir):
+    at = AppTest.from_file(APP_PATH, default_timeout=30).run()
+    assert not at.exception
+    flag_filter = next(m for m in at.multiselect if "flags" in m.label.lower())
+    # Fixture roles 1 and 3 carry subordinated/long-dated bonds and a split rating.
+    # The filter shows the plain-language label, not the code. Importing app.py
+    # here would re-execute the Streamlit script, so match on the label text.
+    options = " | ".join(flag_filter.options)
+    for label in ("Subordinated", "Long tenor", "Split rating"):
+        assert label in options
+
+
 def test_app_shows_message_when_no_snapshot(tmp_path, monkeypatch):
     (tmp_path / "universe.csv").write_text(UNIVERSE_CSV, encoding="utf-8")
     monkeypatch.setenv("IOS_DATA_DIR", str(tmp_path))

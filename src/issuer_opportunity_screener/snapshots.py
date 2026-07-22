@@ -1,6 +1,7 @@
 """Versioned, append-only parquet snapshot store."""
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
             "sector": u.sector,
             "recognition_score": u.recognition_score,
             "internal_rating": u.internal_rating,
+            "state_linked": u.state_linked,
             "cds_5y_bps": None,
             "cds_liquidity_score": None,
             "cds_security": None,
@@ -43,6 +45,9 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
             "bond_last_price": None,
             "bond_maturity": None,
             "bond_coupon": None,
+            "bond_payment_rank": None,
+            "bond_currency": None,
+            "bond_amt_outstanding": None,
             "rating_moody": None,
             "rating_sp": None,
             "rating_fitch": None,
@@ -64,6 +69,9 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
                 bond_last_price=credit.bond.last_price,
                 bond_maturity=credit.bond.maturity,
                 bond_coupon=credit.bond.coupon,
+                bond_payment_rank=credit.bond.payment_rank,
+                bond_currency=credit.bond.currency,
+                bond_amt_outstanding=credit.bond.amount_outstanding,
                 rating_moody=credit.rating_moody,
                 rating_sp=credit.rating_sp,
                 rating_fitch=credit.rating_fitch,
@@ -78,7 +86,27 @@ def _build_frame(universe: list[UniverseIssuer], result: FetchResult) -> pd.Data
     return pd.DataFrame(rows)
 
 
-def write_snapshot(root: Path, universe: list[UniverseIssuer], result: FetchResult) -> Path:
+def universe_fingerprint(path: Path) -> dict:
+    """Content hash of the universe file that produced a snapshot.
+
+    The universe is mutable (the desk edits it, quarantine removes names), so
+    without recording which version was used, a snapshot cannot be reconstructed
+    and any backtest over the snapshot history is survivorship-biased."""
+    path = Path(path)
+    raw = path.read_bytes()
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "rows": max(0, len([line for line in raw.decode("utf-8").splitlines() if line.strip()]) - 1),
+    }
+
+
+def write_snapshot(
+    root: Path,
+    universe: list[UniverseIssuer],
+    result: FetchResult,
+    universe_path: Path | None = None,
+) -> Path:
     directory = Path(root) / result.as_of.strftime("%Y-%m-%dT%H%M%S")
     directory.mkdir(parents=True, exist_ok=False)
 
@@ -101,6 +129,8 @@ def write_snapshot(root: Path, universe: list[UniverseIssuer], result: FetchResu
         "brazil": asdict(result.brazil),
         "coverage": {col: round(float(frame[col].notna().mean()), 4) for col in COVERAGE_COLUMNS},
     }
+    if universe_path is not None and Path(universe_path).exists():
+        manifest["universe"] = universe_fingerprint(universe_path)
     (directory / MANIFEST_FILE).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return directory
 

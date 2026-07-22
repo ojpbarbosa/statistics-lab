@@ -60,16 +60,25 @@ class FixtureSource:
                 cds_liquidity_score=None if role == 1 else 40.0 + (idx * 13) % 60,
                 cds_security=None if role == 1 else f"{u.ticker} CDS USD SR 5Y D14 Corp",
                 bond=BondSnapshot(
-                    security=f"{u.ticker} 5.5 2031 Corp",
+                    # Role 1 has no CDS, so its bond drives the rank: give it the
+                    # subordinated, long-dated profile that the flags exist to catch.
+                    security=f"{u.ticker} 5.5 {'2036' if role == 1 else '2031'} Corp",
                     z_spread_bps=base + 15.0,
                     last_price=97.5 - (idx % 7),
-                    maturity=dt.date(2031, 6, 15),
+                    maturity=dt.date(2036 if role == 1 else 2031, 6, 15),
                     coupon=5.5,
+                    payment_rank="Sr Non-Preferred" if role == 1 else "Sr Unsecured",
                 ),
                 rating_moody=_MOODY[rating],
                 rating_sp=rating,
                 rating_fitch=rating,
-                ratings={"moody": _MOODY[rating], "sp": rating, "fitch": rating, "composite": rating},
+                # Role 3 carries a provider disagreement and a negative watch, so the
+                # split-rating and outlook paths are exercised by the demo data.
+                ratings=(
+                    {"moody": "Baa1", "sp": f"{rating} *-", "fitch": rating, "composite": rating}
+                    if role == 3
+                    else {"moody": _MOODY[rating], "sp": rating, "fitch": rating, "composite": rating}
+                ),
                 equity=(
                     EquityOverlay()
                     if role == 2
@@ -92,7 +101,9 @@ class FixtureSource:
             if role == 3:
                 credit.quality_notes.append("partial spread history (8 weekly points)")
             for week in range(points):
-                wobble = 0.80 + 0.40 * ((week * (idx + 3)) % 10) / 10.0
+                # Prime modulus: a composite one collapses to two or three distinct
+                # closes for many issuer indices, which reads as a stale quote.
+                wobble = 0.80 + 0.40 * ((week * (idx + 3)) % 17) / 17.0
                 history.append(
                     HistoryPoint(
                         ticker=u.ticker,

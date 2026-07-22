@@ -39,8 +39,9 @@ def test_rating_rank_ordering():
 def test_composite_rating_rank_median():
     # BB+ (10), BB (11), BB- (12) -> median 11
     assert composite_rating_rank("Ba1", "BB", "BB-") == 11
-    # two values -> rounded mean of 10 and 11 -> 10 or 11; int() of 10.5 rounds to 10 with round-half-even
-    assert composite_rating_rank(None, "BB+", "BB") == round((10 + 11) / 2)
+    # Two values straddle a notch: BB+ (10) and BB (11) resolve to BB, the weaker
+    # side. See test_two_provider_split_breaks_toward_the_weaker_rating.
+    assert composite_rating_rank(None, "BB+", "BB") == 11
     assert composite_rating_rank(None, None, None) is None
 
 

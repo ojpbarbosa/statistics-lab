@@ -19,7 +19,7 @@ def run_pipeline(universe_path: Path, source: CreditDataSource, snapshots_root: 
     result = source.fetch(issuers)
     if result.failures:
         log.warn(f"{len(result.failures)} issuer(s) failed: {', '.join(sorted(result.failures))}")
-    directory = write_snapshot(snapshots_root, issuers, result)
+    directory = write_snapshot(snapshots_root, issuers, result, universe_path=universe_path)
     log.success(f"snapshot written: {directory}")
 
     # Opt-in hygiene: move unscored names to the quarantine file so the next

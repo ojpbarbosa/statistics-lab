@@ -63,14 +63,44 @@ and the ⋮ → Settings toggle. Chart colors are validated for both modes.
 
 ## Reports and universe lifecycle
 
-- Snapshot report (screening summary, edge cases, movers, data quality):
-  download from the Data quality tab or run
+- Snapshot report (screening summary, edge cases, flagged names, movers, data
+  quality): download from the Data quality tab or run
   `poetry run python -m issuer_opportunity_screener.reports` (writes to `reports/`).
 - Movers tab compares any two snapshots: spread deltas, viability flips,
-  tier changes, new and dropped names, plus rule-based callouts.
+  tier changes, new and dropped names, plus rule-based callouts. Viability
+  flips are attributed between the issuer and the sovereign, since Brazil's own
+  CDS moves more than the 20 bps tolerance in a normal week.
+- Flags annotate a rank without changing it: `unrated`, `split_rating`,
+  `stale_history`, `thin_peers`, `subordinated`, `long_tenor`,
+  `sovereign_correlated`, `cheap_for_a_reason`, `benchmark_mismatch`, and
+  `benchmark_sensitive`. Filter them out on the Screen tab, read the per-name
+  explanation on the Issuer tab. Defined in
+  `docs/methodology/screening_criteria_v1.typ`.
 - Add names via the sidebar form; quarantine unscored names (with reasons)
   and restore them from the Data quality tab. The final report skeleton
   lives at `docs/report/final_report.typ`.
+
+## Validation
+
+The Validation tab and the snapshot report answer the questions the methodology's
+Validation Plan asks: rank stability between snapshots (Spearman, tier changes,
+viability flips), weight sensitivity across twelve named scenarios, shortlist
+concentration by basket/country/sector (HHI), and co-movement of weekly spread
+changes. Code in `validation.py`, all pure functions over snapshots.
+
+Snapshot manifests record the SHA-256 of the universe file that produced them,
+so a snapshot stays reconstructible as the universe drifts.
+
+## Live Bloomberg runs
+
+- `IOS_MAX_ISSUERS=3` runs a preflight over the first few names before
+  committing to the full universe. Recommended before every long run.
+- Requests give up after four silent 30s waits rather than hanging forever, and
+  a dropped session is reconnected up to three times before the run stops and
+  keeps what it already fetched.
+- `IOS_LOG_LEVEL=trace` prints every candidate and field decision.
+- `IOS_HEDGE_COST_BPS` sets the cross-currency hedging cost used for the
+  BRL-hedged pickup. It is a desk input, not a market observation.
 
 ## BQuant route (bypasses the Desktop API gate)
 

@@ -17,6 +17,7 @@ from issuer_opportunity_screener.insights import build_insights, movers_frame, s
 from issuer_opportunity_screener.scoring import score_snapshot, screen_frame
 from issuer_opportunity_screener.snapshots import Snapshot, list_snapshots, load_snapshot
 from issuer_opportunity_screener.universe_admin import unscored_reasons
+from issuer_opportunity_screener.validation import validation_report
 
 
 def _md_table(frame: pd.DataFrame, columns: dict[str, str], float_format: str = "{:.1f}") -> str:
@@ -91,9 +92,33 @@ def build_report(snap: Snapshot, baseline: Snapshot | None = None) -> str:
             )
         )
 
+    parts.append("## Flagged names")
+    parts.append(
+        "Warnings that change what a rank means: subordination, split ratings, "
+        "stale quotes, sovereign correlation, benchmark basis, and tenor."
+    )
+    flagged = frame[frame["flag_codes"].astype(bool)]
+    if flagged.empty:
+        parts.append("No flags raised in this snapshot.")
+    else:
+        parts.append(
+            _md_table(
+                flagged.sort_values("composite", ascending=False),
+                {
+                    "issuer": "Issuer", "ticker": "Ticker", "tier": "Tier",
+                    "flag_codes": "Flags", "flag_notes": "What it means",
+                },
+            )
+        )
+
     if baseline is not None:
         frame_now, frame_then, _, _ = scored_frames(snap, baseline)
-        movers = movers_frame(frame_now, frame_then)
+        movers = movers_frame(
+            frame_now,
+            frame_then,
+            brazil_now=snap.manifest["brazil"]["cds_5y_bps"],
+            brazil_then=baseline.manifest["brazil"]["cds_5y_bps"],
+        )
         baseline_label = baseline.manifest["as_of"]
         parts.append(f"## Movers vs {baseline_label}")
         significant = movers[(movers.status == "both") & (movers.delta_bps.abs() >= 15)]
@@ -114,6 +139,62 @@ def build_report(snap: Snapshot, baseline: Snapshot | None = None) -> str:
         if callouts:
             parts.append("### Callouts")
             parts.extend(f"- {insight.message}" for insight in callouts[:20])
+
+    parts.append("## Validation")
+    parts.append(
+        "Does the screen agree with itself, and is the ranking driven by the evidence "
+        "or by the weighting choice? Method in `docs/methodology/screening_criteria_v1.typ`."
+    )
+    validation = validation_report(snap, baseline)
+
+    sensitivity = validation["sensitivity"]
+    if sensitivity["scenarios"]:
+        worst = min(sensitivity["per_scenario"], key=lambda row: row["top_n_overlap"])
+        correlation_text = (
+            f"mean {sensitivity['mean_spearman']:.3f}, worst {sensitivity['min_spearman']:.3f}"
+            if sensitivity["mean_spearman"] is not None
+            else "not measurable (fewer than two scored names)"
+        )
+        parts.append(
+            f"**Weight sensitivity.** {sensitivity['scenarios']} scenarios at "
+            f"+/-{sensitivity['perturbation']:.0%} per block. Rank correlation vs the documented "
+            f"weights: {correlation_text}. "
+            f"Top-{sensitivity['top_n']} overlap: worst {sensitivity['min_top_n_overlap']:.0%} "
+            f"under `{worst['label']}`"
+            + (f" (in: {', '.join(worst['entered'])}; out: {', '.join(worst['left'])})"
+               if worst["entered"] or worst["left"] else "")
+            + "."
+        )
+
+    conc = validation["concentration"]
+    if conc.get("names"):
+        dimensions = ", ".join(
+            f"{dimension} HHI {conc[dimension]['hhi']:.2f} (largest {conc[dimension]['largest']}, "
+            f"{conc[dimension]['top_share']:.0%})"
+            for dimension in ("basket", "country", "sector")
+            if dimension in conc
+        )
+        parts.append(f"**Concentration** of the top {conc['top_n']}: {dimensions}.")
+        parts.extend(f"- {warning}" for warning in conc["warnings"])
+
+    correlation = validation["correlation"]
+    if correlation["mean_pairwise"] is not None:
+        parts.append(
+            f"**Co-movement** of the shortlist: mean pairwise correlation of weekly spread "
+            f"changes {correlation['mean_pairwise']:.2f} across {correlation['pairs']} pairs "
+            f"(max {correlation['max_pairwise']:.2f}). Names that move together do not "
+            f"diversify each other."
+        )
+
+    stability = validation["stability"]
+    if stability and stability["names_in_both"] and stability["spearman"] is not None:
+        parts.append(
+            f"**Stability** vs the baseline snapshot: rank correlation "
+            f"{stability['spearman']:.3f} across {stability['names_in_both']} names, "
+            f"{stability['tier_changes']} tier change(s), {stability['viability_flips']} "
+            f"viability flip(s), mean composite move "
+            f"{stability['mean_abs_composite_move']:.1f} points."
+        )
 
     parts.append("## Data quality")
     coverage = manifest.get("coverage", {})

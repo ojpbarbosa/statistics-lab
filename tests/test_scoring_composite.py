@@ -65,11 +65,12 @@ def test_screen_frame_shape_and_order(snap):
     scores = score_snapshot(snap)
     frame = screen_frame(snap, scores)
     assert list(frame.columns) == [
-        "issuer", "ticker", "basket", "tier", "composite", "viable",
+        "issuer", "ticker", "basket", "country", "sector", "tier", "composite", "viable",
         "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
         "bond_last_price", "rating_composite", "rating_source",
         "internal_rating", "recognition_score", "partial_data",
-        "quality_notes", "viability_note",
+        "quality_notes", "viability_note", "flag_codes", "flag_notes",
+        "coverage", "benchmark_basis", "rating_dispersion",
     ]
     assert len(frame) == len(scores)
     assert list(frame.composite) == sorted(frame.composite, reverse=True)
@@ -114,11 +115,12 @@ def test_screen_frame_empty_scores(snap):
     frame = screen_frame(snap, [])
     assert frame.empty
     assert list(frame.columns) == [
-        "issuer", "ticker", "basket", "tier", "composite", "viable",
+        "issuer", "ticker", "basket", "country", "sector", "tier", "composite", "viable",
         "spread_vs_brazil_bps", "cds_5y_bps", "bond_z_spread_bps",
         "bond_last_price", "rating_composite", "rating_source",
         "internal_rating", "recognition_score", "partial_data",
-        "quality_notes", "viability_note",
+        "quality_notes", "viability_note", "flag_codes", "flag_notes",
+        "coverage", "benchmark_basis", "rating_dispersion",
     ]
 
 

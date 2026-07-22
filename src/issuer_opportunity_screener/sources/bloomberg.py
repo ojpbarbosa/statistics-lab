@@ -50,6 +50,9 @@ RATING_FIELD_TO_AGENCY = {
 }
 RATING_FIELDS = list(RATING_FIELD_TO_AGENCY)
 DEFAULT_BOND_CURRENCIES = ("USD",)
+EVENT_TIMEOUT_MS = 30_000
+MAX_SILENT_WAITS = 4  # consecutive silent waits before a request is declared dead
+RECONNECT_ATTEMPTS = 3  # a dropped session must not fail every remaining issuer
 
 
 def merge_ratings(rows_by_security: dict[str, dict], order: list[str]) -> dict[str, str]:
@@ -289,6 +292,42 @@ def select_bond(
     return eligible[0][3]
 
 
+def _opt_text(value) -> str | None:
+    """Bloomberg field values arrive as whatever blpapi decoded them to. The
+    snapshot frame needs one stable type per column."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _opt_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def issuers_to_fetch(issuers: list) -> list:
+    """IOS_MAX_ISSUERS trims the run so the desk can smoke-test a handful of
+    names before committing to the full universe. Unset or unparseable = all."""
+    raw = os.environ.get("IOS_MAX_ISSUERS", "").strip()
+    if not raw:
+        return issuers
+    try:
+        limit = int(raw)
+    except ValueError:
+        log.warn(f"IOS_MAX_ISSUERS={raw!r} is not a number; fetching the full universe")
+        return issuers
+    if limit <= 0:
+        return issuers
+    if limit < len(issuers):
+        log.warn(f"IOS_MAX_ISSUERS={limit}: fetching {limit} of {len(issuers)} issuers (preflight run)")
+    return issuers[:limit]
+
+
 def credit_from_fields(ticker: str, fields: dict, bond: dict | None) -> IssuerCredit:
     credit = IssuerCredit(
         ticker=ticker,
@@ -306,7 +345,12 @@ def credit_from_fields(ticker: str, fields: dict, bond: dict | None) -> IssuerCr
             z_spread_bps=bond.get("z_spread_bps"),
             last_price=bond.get("last_price"),
             maturity=bond.get("maturity"),
-            coupon=bond.get("coupon"),
+            coupon=_opt_float(bond.get("coupon")),
+            # Whatever blpapi decoded these to, the snapshot frame needs stable
+            # types or the parquet write fails for the whole run.
+            payment_rank=_opt_text(bond.get("payment_rank")),
+            currency=_opt_text(bond.get("crncy")),
+            amount_outstanding=_opt_float(bond.get("amt_outstanding")),
         )
     else:
         credit.quality_notes.append("no eligible senior unsecured USD 3-10y bond found")
@@ -347,10 +391,50 @@ class BloombergSource:
             raise BloombergUnavailable(f"could not open blpapi session on {self.host}:{self.port}")
         return session
 
-    def _reference_fields(self, session, securities: list[str], fields: list[str]) -> dict[str, dict]:
-        """ReferenceDataRequest -> {security: {FIELD: value}} with plain python values."""
+    def _reconnect(self, session):
+        """Re-establish a dropped session. Returns None when it cannot be done,
+        which tells fetch() to stop and keep what it already has."""
+        try:
+            session.stop()
+        except Exception:  # noqa: BLE001: the session is already broken
+            pass
+        for attempt in range(1, RECONNECT_ATTEMPTS + 1):
+            try:
+                fresh = self._connect()
+                log.warn(f"session re-established on attempt {attempt}; continuing the run")
+                return fresh
+            except Exception as exc:  # noqa: BLE001: report and retry
+                log.warn(f"reconnect attempt {attempt}/{RECONNECT_ATTEMPTS} failed: {exc}")
+        return None
+
+    def _drain(self, session):
+        """Yield every message until the RESPONSE event.
+
+        blpapi returns a TIMEOUT event when nothing arrived within the wait, so
+        an unbounded `while True` spins forever if a response never comes: a
+        125-name run would hang silently with no way to tell which request died.
+        A few consecutive silent waits end the request instead."""
         import blpapi
 
+        silent = 0
+        while True:
+            event = session.nextEvent(EVENT_TIMEOUT_MS)
+            if event.eventType() == blpapi.Event.TIMEOUT:
+                silent += 1
+                if silent >= MAX_SILENT_WAITS:
+                    raise BloombergUnavailable(
+                        f"no response from Bloomberg after {silent} waits of "
+                        f"{EVENT_TIMEOUT_MS // 1000}s; the Terminal may be logged out or busy"
+                    )
+                log.trace(f"no event within {EVENT_TIMEOUT_MS // 1000}s ({silent}/{MAX_SILENT_WAITS})")
+                continue
+            silent = 0
+            yield from event
+            if event.eventType() == blpapi.Event.RESPONSE:
+                return
+
+    def _reference_fields(self, session, securities: list[str], fields: list[str]) -> dict[str, dict]:
+        """ReferenceDataRequest -> {security: {FIELD: value}} with plain python values."""
         service = session.getService("//blp/refdata")
         request = service.createRequest("ReferenceDataRequest")
         for security in securities:
@@ -359,53 +443,47 @@ class BloombergSource:
             request.getElement("fields").appendValue(field)
         session.sendRequest(request)
         out: dict[str, dict] = {}
-        while True:
-            event = session.nextEvent(30_000)
-            for msg in event:
-                if msg.hasElement("responseError"):
-                    error_text = str(msg.getElement("responseError"))
-                    log.warn(f"refdata responseError: {error_text}")
-                    if "WORKFLOW_REVIEW_NEEDED" in error_text and not self._workflow_review_hit:
-                        self._workflow_review_hit = True
-                        log.error(
-                            "Bloomberg has gated this request pattern behind a workflow review "
-                            "(category LIMIT, subcategory WORKFLOW_REVIEW_NEEDED). This is an "
-                            "entitlement decision, not a code failure: contact your Bloomberg "
-                            "representative or HELP HELP, cite the nid from the message above, "
-                            "and describe the workflow (internal desk screening, display only, "
-                            "no redistribution) to get it approved."
-                        )
-                    continue
-                if not msg.hasElement("securityData"):
-                    continue
-                data = msg.getElement("securityData")
-                for i in range(data.numValues()):
-                    row = data.getValueAsElement(i)
-                    security = row.getElementAsString("security")
-                    values: dict = {}
-                    if row.hasElement("securityError"):
-                        log.trace(f"refdata securityError for {security!r}")
-                        out[security] = values
-                        continue
-                    if row.hasElement("fieldData"):
-                        field_data = row.getElement("fieldData")
-                        for j in range(field_data.numElements()):
-                            el = field_data.getElement(j)
-                            try:
-                                values[str(el.name())] = flatten_field_element(el)
-                            except Exception:  # noqa: BLE001: one bad field must not kill the request
-                                continue
+        for msg in self._drain(session):
+            if msg.hasElement("responseError"):
+                error_text = str(msg.getElement("responseError"))
+                log.warn(f"refdata responseError: {error_text}")
+                if "WORKFLOW_REVIEW_NEEDED" in error_text and not self._workflow_review_hit:
+                    self._workflow_review_hit = True
+                    log.error(
+                        "Bloomberg has gated this request pattern behind a workflow review "
+                        "(category LIMIT, subcategory WORKFLOW_REVIEW_NEEDED). This is an "
+                        "entitlement decision, not a code failure: contact your Bloomberg "
+                        "representative or HELP HELP, cite the nid from the message above, "
+                        "and describe the workflow (internal desk screening, display only, "
+                        "no redistribution) to get it approved."
+                    )
+                continue
+            if not msg.hasElement("securityData"):
+                continue
+            data = msg.getElement("securityData")
+            for i in range(data.numValues()):
+                row = data.getValueAsElement(i)
+                security = row.getElementAsString("security")
+                values: dict = {}
+                if row.hasElement("securityError"):
+                    log.trace(f"refdata securityError for {security!r}")
                     out[security] = values
-            if event.eventType() == blpapi.Event.RESPONSE:
-                break
+                    continue
+                if row.hasElement("fieldData"):
+                    field_data = row.getElement("fieldData")
+                    for j in range(field_data.numElements()):
+                        el = field_data.getElement(j)
+                        try:
+                            values[str(el.name())] = flatten_field_element(el)
+                        except Exception:  # noqa: BLE001: one bad field must not kill the request
+                            continue
+                out[security] = values
         return out
 
     def _spread_history(self, session, security: str, as_of: dt.date, field: str = "PX_LAST") -> list[tuple[dt.date, float]]:
         """HistoricalDataRequest for one field, weekly, 1y back -> [(date, value)].
         CDS curves quote spread as PX_LAST; bonds need Z_SPRD_MID (their
         PX_LAST is a price, which must never enter spread history)."""
-        import blpapi
-
         service = session.getService("//blp/refdata")
         request = service.createRequest("HistoricalDataRequest")
         request.getElement("securities").appendValue(security)
@@ -415,20 +493,22 @@ class BloombergSource:
         request.set("periodicitySelection", "WEEKLY")
         session.sendRequest(request)
         points: list[tuple[dt.date, float]] = []
-        while True:
-            event = session.nextEvent(30_000)
-            for msg in event:
-                if not msg.hasElement("securityData"):
-                    continue
-                field_data = msg.getElement("securityData").getElement("fieldData")
-                for i in range(field_data.numValues()):
-                    row = field_data.getValueAsElement(i)
-                    if row.hasElement(field):
-                        points.append(
-                            (as_date(row.getElementAsDatetime("date")), row.getElementAsFloat(field))
-                        )
-            if event.eventType() == blpapi.Event.RESPONSE:
-                break
+        for msg in self._drain(session):
+            if not msg.hasElement("securityData"):
+                continue
+            security_data = msg.getElement("securityData")
+            if security_data.hasElement("securityError"):
+                log.trace(f"history securityError for {security!r}")
+                continue
+            if not security_data.hasElement("fieldData"):
+                continue
+            field_data = security_data.getElement("fieldData")
+            for i in range(field_data.numValues()):
+                row = field_data.getValueAsElement(i)
+                if row.hasElement(field):
+                    points.append(
+                        (as_date(row.getElementAsDatetime("date")), row.getElementAsFloat(field))
+                    )
         return points
 
     # --- fetch -----------------------------------------------------------------
@@ -446,14 +526,14 @@ class BloombergSource:
         log.step(f"fetching Brazil benchmark ({BRAZIL_CDS_TICKER})")
         try:
             brazil_row = self._reference_fields(session, [BRAZIL_CDS_TICKER], ["PX_LAST"]).get(BRAZIL_CDS_TICKER, {})
-            brazil_cds = float(brazil_row["PX_LAST"]) if "PX_LAST" in brazil_row else None
+            brazil_cds = _opt_float(brazil_row.get("PX_LAST"))
             if brazil_cds is None:
                 _, brazil_curve = split_cds_curve(self._instrument_lookup(session, "BRAZIL"))
                 brazil_cds_security = pick_cds_5y(brazil_curve, "BRAZIL", self.currencies)
                 if brazil_cds_security:
                     lookup_row = self._reference_fields(session, [brazil_cds_security], ["PX_LAST"]).get(brazil_cds_security, {})
                     if "PX_LAST" in lookup_row:
-                        brazil_cds = float(lookup_row["PX_LAST"])
+                        brazil_cds = _opt_float(lookup_row["PX_LAST"])
                         log.info(f"Brazil CDS resolved via instruments lookup: {brazil_cds_security}")
             if brazil_cds is None:
                 brazil_cds = BRAZIL_FALLBACK.cds_5y_bps
@@ -507,6 +587,7 @@ class BloombergSource:
             failures["__BRAZIL__"] = f"benchmark fetch failed, using fallback: {exc}"
             log.error(f"Brazil benchmark fetch failed ({exc}); using fallback {BRAZIL_FALLBACK.cds_5y_bps:.0f} bps")
 
+        issuers = issuers_to_fetch(issuers)
         total = len(issuers)
         for index, issuer in enumerate(issuers, start=1):
             log.step(f"({index}/{total}) {issuer.ticker}: {issuer.issuer}")
@@ -518,18 +599,20 @@ class BloombergSource:
                 if "PX_LAST" not in equity_row:
                     log.trace(f"{issuer.ticker}: equity handle {equity_security!r} did not resolve")
 
-                total_recs = sum(equity_row.get(f, 0) or 0 for f in ("TOT_BUY_REC", "TOT_SELL_REC", "TOT_HOLD_REC"))
+                # Every numeric read is coerced: a field that comes back as text
+                # or an array would otherwise throw and cost the whole issuer.
+                buys = _opt_float(equity_row.get("TOT_BUY_REC")) or 0.0
+                sells = _opt_float(equity_row.get("TOT_SELL_REC")) or 0.0
+                holds = _opt_float(equity_row.get("TOT_HOLD_REC")) or 0.0
+                total_recs = buys + sells + holds
+                cds_quote = _opt_float(cds_row.get("PX_LAST"))
                 fields = {
-                    "cds_5y_bps": float(cds_row["PX_LAST"]) if "PX_LAST" in cds_row else None,
-                    "cds_liquidity_score": 100.0 if "PX_LAST" in cds_row else None,
+                    "cds_5y_bps": cds_quote,
+                    "cds_liquidity_score": 100.0 if cds_quote is not None else None,
                     "equity_ticker": equity_security if "PX_LAST" in equity_row else None,
-                    "px_chg_3m_pct": equity_row.get("CHG_PCT_3M"),
-                    "px_chg_12m_pct": equity_row.get("CHG_PCT_1YR"),
-                    "rec_balance": (
-                        ((equity_row.get("TOT_BUY_REC") or 0) - (equity_row.get("TOT_SELL_REC") or 0)) / total_recs
-                        if total_recs
-                        else None
-                    ),
+                    "px_chg_3m_pct": _opt_float(equity_row.get("CHG_PCT_3M")),
+                    "px_chg_12m_pct": _opt_float(equity_row.get("CHG_PCT_1YR")),
+                    "rec_balance": (buys - sells) / total_recs if total_recs else None,
                 }
 
                 bond_securities, cds_curve = self._discover_corp_securities(session, equity_security, issuer.ticker)
@@ -540,7 +623,7 @@ class BloombergSource:
                         fallback_row = self._reference_fields(session, [fallback], ["PX_LAST"]).get(fallback, {})
                         if "PX_LAST" in fallback_row:
                             cds_security = fallback
-                            fields["cds_5y_bps"] = float(fallback_row["PX_LAST"])
+                            fields["cds_5y_bps"] = _opt_float(fallback_row["PX_LAST"])
                             fields["cds_liquidity_score"] = 100.0
                             log.info(f"{issuer.ticker}: CDS resolved via instruments lookup: {fallback}")
                 cds_resolved = fields["cds_5y_bps"] is not None
@@ -639,6 +722,17 @@ class BloombergSource:
             except Exception as exc:  # noqa: BLE001: one bad issuer must not kill the run
                 failures[issuer.ticker] = str(exc)
                 log.error(f"{issuer.ticker}: {exc}")
+                # A dropped session would otherwise fail every remaining name
+                # with the same error and waste the rest of the run.
+                if isinstance(exc, BloombergUnavailable):
+                    session = self._reconnect(session)
+                    if session is None:
+                        log.error(
+                            f"could not re-establish the session; stopping after {index} of {total} "
+                            f"issuers and keeping what was fetched"
+                        )
+                        failures["__SESSION__"] = "session lost and could not be re-established"
+                        break
 
         ok = len(credits)
         summary = f"fetched {ok}/{total} issuers, {len(history)} history points, {len(failures)} failure(s)"
@@ -650,8 +744,6 @@ class BloombergSource:
 
     def _instrument_lookup(self, session, ticker: str, yellow_key: str = "YK_FILTER_CORP") -> list[str]:
         """Search //blp/instruments for the issuer's securities."""
-        import blpapi
-
         if not session.openService("//blp/instruments"):
             return []
         service = session.getService("//blp/instruments")
@@ -661,20 +753,16 @@ class BloombergSource:
         request.set("maxResults", 200)
         session.sendRequest(request)
         results: list[str] = []
-        while True:
-            event = session.nextEvent(30_000)
-            for msg in event:
-                if not msg.hasElement("results"):
-                    continue
-                rows = msg.getElement("results")
-                for i in range(rows.numValues()):
-                    row = rows.getValueAsElement(i)
-                    # No ticker-prefix filter here: bond results often come back
-                    # as ID-style keys (e.g. 'EJ682107 Corp'); the credit-family
-                    # check happens after refdata via the TICKER field.
-                    results.append(parsekeyable(row.getElementAsString("security")))
-            if event.eventType() == blpapi.Event.RESPONSE:
-                break
+        for msg in self._drain(session):
+            if not msg.hasElement("results"):
+                continue
+            rows = msg.getElement("results")
+            for i in range(rows.numValues()):
+                row = rows.getValueAsElement(i)
+                # No ticker-prefix filter here: bond results often come back
+                # as ID-style keys (e.g. 'EJ682107 Corp'); the credit-family
+                # check happens after refdata via the TICKER field.
+                results.append(parsekeyable(row.getElementAsString("security")))
         return results
 
     def _discover_corp_securities(self, session, equity_security: str, ticker: str) -> tuple[list[str], list[str]]:

@@ -168,12 +168,38 @@ SCREEN_COLUMNS = {
     "partial_data": st.column_config.CheckboxColumn("Partial"),
     "quality_notes": st.column_config.TextColumn("Notes"),
     "viability_note": st.column_config.TextColumn("Viability", width="large"),
+    "flag_codes": st.column_config.TextColumn("Flags"),
+    "flag_notes": st.column_config.TextColumn("What the flags mean", width="large"),
+    "coverage": st.column_config.NumberColumn(
+        "Weight scored", format="percent",
+        help="Share of the block weight that actually scored; the rest was renormalized away.",
+    ),
+    "benchmark_basis": st.column_config.TextColumn("Benchmark basis"),
+    "rating_dispersion": st.column_config.NumberColumn("Split (notches)", format="%.0f"),
 }
 
 EDGE_CASE_COLUMNS = [
     "issuer", "ticker", "basket", "rating_composite", "rating_source",
-    "cds_5y_bps", "bond_z_spread_bps", "spread_vs_brazil_bps", "viability_note",
+    "cds_5y_bps", "bond_z_spread_bps", "spread_vs_brazil_bps", "benchmark_basis",
+    "viability_note",
 ]
+
+FLAG_COLUMNS = [
+    "issuer", "ticker", "basket", "tier", "composite", "flag_codes", "flag_notes",
+]
+
+FLAG_LABELS = {
+    "unrated": "Unrated: composite has no credit-quality block",
+    "split_rating": "Split rating: providers disagree by 3+ notches",
+    "stale_history": "Stale history: quote barely moves",
+    "thin_peers": "Thin basket: no usable peer median",
+    "subordinated": "Subordinated: structural spread pickup",
+    "long_tenor": "Long tenor: curve, not credit",
+    "sovereign_correlated": "Sovereign correlated: not diversification from Brazil",
+    "cheap_for_a_reason": "Cheap for a reason: wide with a negative outlook",
+    "benchmark_mismatch": "Benchmark mismatch: bond spread vs sovereign CDS",
+    "benchmark_sensitive": "Benchmark sensitive: verdict flips by leg",
+}
 
 
 def render_market_map(view: pd.DataFrame):
@@ -243,6 +269,14 @@ def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
     only_viable = col3.checkbox("Viable vs Brazil only")
     min_spread = col4.number_input("Min spread (bps)", value=0.0, step=25.0)
 
+    present_flags = sorted({code for codes in frame.flag_codes for code in codes.split(", ") if code})
+    hidden_flags = st.multiselect(
+        "Hide names carrying these flags",
+        present_flags,
+        format_func=lambda code: FLAG_LABELS.get(code, code),
+        help="Each flag marks a reason the rank may mean something other than it looks like.",
+    )
+
     view = frame
     if baskets:
         view = view[view.basket.isin(baskets)]
@@ -250,6 +284,8 @@ def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
         view = view[view.tier.isin(tiers)]
     if only_viable:
         view = view[view.viable]
+    for code in hidden_flags:
+        view = view[~view.flag_codes.str.contains(code, regex=False)]
     spread = view.cds_5y_bps.fillna(view.bond_z_spread_bps)
     view = view[spread.fillna(0) >= min_spread]
 
@@ -293,6 +329,29 @@ def render_screen_tab(snap: Snapshot, frame: pd.DataFrame):
             width="stretch",
             hide_index=True,
             column_config={key: SCREEN_COLUMNS[key] for key in EDGE_CASE_COLUMNS},
+        )
+
+    st.subheader("Flagged names")
+    st.caption(
+        "Reasons a rank may mean something other than what it looks like: subordination, "
+        "split ratings, stale quotes, sovereign correlation, benchmark basis, and tenor."
+    )
+    flagged = frame[frame.flag_codes.astype(bool)]
+    if flagged.empty:
+        st.caption("No flags raised in this snapshot.")
+    else:
+        counts = (
+            pd.Series([code for codes in flagged.flag_codes for code in codes.split(", ") if code])
+            .value_counts()
+        )
+        st.caption(
+            "  |  ".join(f"{FLAG_LABELS.get(code, code)}: {count}" for code, count in counts.items())
+        )
+        st.dataframe(
+            flagged[FLAG_COLUMNS],
+            width="stretch",
+            hide_index=True,
+            column_config={key: SCREEN_COLUMNS[key] for key in FLAG_COLUMNS},
         )
 
 
@@ -373,6 +432,11 @@ def render_issuer_tab(snap: Snapshot, scores: list[IssuerScore]):
     )
     st.markdown(f"**Composite** = `{score.composite_detail}` (weights renormalize over blocks with data; tiers: A at 70, B at 50)")
 
+    if score.flags:
+        st.subheader("Flags")
+        for flag in score.flags:
+            st.warning(f"**{FLAG_LABELS.get(flag.code, flag.code)}**  \n{flag.message}")
+
     st.subheader("Signal detail")
     signals = pd.DataFrame(
         [
@@ -416,7 +480,11 @@ def render_issuer_tab(snap: Snapshot, scores: list[IssuerScore]):
     ratings_raw = getattr(row, "ratings_all", None)
     if isinstance(ratings_raw, str) and ratings_raw.strip():
         replication.append(f"- Ratings as fetched (bond, then CDS, then equity): `{ratings_raw}`")
-    replication.append("- Viability rule: spread vs Brazil >= 0 bps, or >= -20 bps with a rating strictly stronger than Brazil")
+    replication.append(
+        "- Viability rule: spread vs Brazil >= 0 bps, or >= -20 bps with a rating strictly "
+        "stronger than Brazil, reading the weakest provider on a split"
+    )
+    replication.append(f"- Benchmark basis used: {score.benchmark_basis}")
     st.markdown("\n".join(replication))
 
     if row.quality_notes:
@@ -435,7 +503,12 @@ def render_movers_tab(snap: Snapshot, chosen: Path):
     baseline = load_snapshot(SNAPSHOTS_ROOT / baseline_name)
 
     frame_now, frame_then, _, _ = scored_frames(snap, baseline)
-    movers = movers_frame(frame_now, frame_then)
+    movers = movers_frame(
+        frame_now,
+        frame_then,
+        brazil_now=snap.manifest["brazil"]["cds_5y_bps"],
+        brazil_then=baseline.manifest["brazil"]["cds_5y_bps"],
+    )
     insights = build_insights(movers, snap, baseline_name)
 
     if insights:
@@ -544,6 +617,99 @@ def render_quality_tab(snap: Snapshot):
         )
 
 
+def render_validation_tab(snap: Snapshot, frame: pd.DataFrame, chosen: Path):
+    """Is the ranking stable, are the weights load-bearing, is the shortlist a
+    basket? The questions the methodology's Validation Plan asks."""
+    from issuer_opportunity_screener.validation import (
+        concentration, rank_stability, spread_correlation, weight_sensitivity)
+
+    top_n = st.slider("Shortlist size", min_value=5, max_value=30, value=10, step=5)
+
+    st.subheader("Weight sensitivity")
+    st.caption(
+        "Each block weight moved up and down, plus two combined tilts. If the top names "
+        "survive every scenario, the weights are a presentation choice rather than the answer."
+    )
+    perturbation = st.slider("Perturbation", min_value=0.05, max_value=0.50, value=0.10, step=0.05)
+    sensitivity = weight_sensitivity(snap, perturbation=perturbation, top_n=top_n)
+    if sensitivity["scenarios"]:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Scenarios", sensitivity["scenarios"])
+        if sensitivity["min_spearman"] is not None:
+            col2.metric("Worst rank correlation", f"{sensitivity['min_spearman']:.3f}")
+        col3.metric(f"Worst top-{top_n} overlap", f"{sensitivity['min_top_n_overlap']:.0%}")
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "scenario": row["label"],
+                    "rank correlation": row["spearman"],
+                    f"top-{top_n} overlap": row["top_n_overlap"],
+                    "entered": ", ".join(row["entered"]),
+                    "left": ", ".join(row["left"]),
+                }
+                for row in sensitivity["per_scenario"]
+            ]),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "scenario": st.column_config.TextColumn("Scenario", width="large"),
+                "rank correlation": st.column_config.NumberColumn("Rank correlation", format="%.3f"),
+                f"top-{top_n} overlap": st.column_config.ProgressColumn(
+                    f"Top-{top_n} overlap", min_value=0, max_value=1, format="percent"
+                ),
+            },
+        )
+
+    st.subheader("Concentration of the shortlist")
+    st.caption("The screen ranks names one at a time, but the product is a basket.")
+    conc = concentration(frame, top_n=top_n)
+    columns = st.columns(3)
+    for column, dimension in zip(columns, ("basket", "country", "sector")):
+        if dimension in conc:
+            column.metric(
+                f"{dimension.title()} HHI",
+                f"{conc[dimension]['hhi']:.2f}",
+                help=f"largest: {conc[dimension]['largest']} at {conc[dimension]['top_share']:.0%}",
+            )
+    for warning in conc["warnings"]:
+        st.warning(warning)
+    if not conc["warnings"]:
+        st.success("No single basket, country, or sector dominates the shortlist.")
+
+    st.subheader("Co-movement")
+    correlation = spread_correlation(snap, list(frame.head(top_n).ticker))
+    if correlation["mean_pairwise"] is None:
+        st.caption("Not enough weekly history to correlate the shortlist yet.")
+    else:
+        st.caption(
+            f"Mean pairwise correlation of weekly spread changes: "
+            f"{correlation['mean_pairwise']:.2f} across {correlation['pairs']} pairs "
+            f"(max {correlation['max_pairwise']:.2f}). Names that move together do not "
+            f"diversify each other."
+        )
+        st.dataframe(correlation["matrix"].style.format("{:.2f}"), width="stretch")
+
+    st.subheader("Stability vs another snapshot")
+    others = [d for d in list_snapshots(SNAPSHOTS_ROOT) if d != chosen]
+    if not others:
+        st.caption("Stability needs at least two snapshots. Refresh again later to compare.")
+        return
+    baseline_name = st.selectbox(
+        "Baseline", [d.name for d in reversed(others)], index=0, key="validation_baseline"
+    )
+    baseline = load_snapshot(SNAPSHOTS_ROOT / baseline_name)
+    stability = rank_stability(frame, screen_frame(baseline, score_snapshot(baseline)))
+    if not stability["names_in_both"]:
+        st.caption("No overlapping names between the two snapshots.")
+        return
+    col1, col2, col3, col4 = st.columns(4)
+    if stability["spearman"] is not None:
+        col1.metric("Rank correlation", f"{stability['spearman']:.3f}")
+    col2.metric("Tier changes", stability["tier_changes"])
+    col3.metric("Viability flips", stability["viability_flips"])
+    col4.metric("Mean composite move", f"{stability['mean_abs_composite_move']:.1f}")
+
+
 def main():
     chosen = sidebar(list_snapshots(SNAPSHOTS_ROOT))
     st.title("Issuer Opportunity Screener")
@@ -568,8 +734,8 @@ def main():
     frame = screen_frame(snap, scores)
     render_kpis(snap, frame)
 
-    tab_screen, tab_issuer, tab_movers, tab_quality = st.tabs(
-        ["Screen", "Issuer detail", "Movers", "Data quality"]
+    tab_screen, tab_issuer, tab_movers, tab_validation, tab_quality = st.tabs(
+        ["Screen", "Issuer detail", "Movers", "Validation", "Data quality"]
     )
     with tab_screen:
         render_screen_tab(snap, frame)
@@ -577,6 +743,8 @@ def main():
         render_issuer_tab(snap, scores)
     with tab_movers:
         render_movers_tab(snap, chosen)
+    with tab_validation:
+        render_validation_tab(snap, frame, chosen)
     with tab_quality:
         render_quality_tab(snap)
         render_universe_admin(snap, scores)

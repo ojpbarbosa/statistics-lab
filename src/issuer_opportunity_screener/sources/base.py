@@ -22,6 +22,7 @@ class UniverseIssuer:
     equity_ticker: str | None = None  # explicit Bloomberg handle, e.g. "ABI BB Equity"
     cds_ticker: str | None = None  # explicit CDS handle when the derived convention fails
     isin: str | None = None  # representative bond ISIN, matches ISIN-keyed sources (Hermes)
+    state_linked: bool = False  # desk-set: SOE or quasi-sovereign, moves with its sovereign
 
 
 @dataclass
@@ -31,6 +32,9 @@ class BondSnapshot:
     last_price: float | None = None
     maturity: dt.date | None = None
     coupon: float | None = None
+    payment_rank: str | None = None  # "Sr Unsecured", "Subordinated", "Sr Non-Preferred", ...
+    currency: str | None = None
+    amount_outstanding: float | None = None  # issue size, in currency units
 
 
 @dataclass

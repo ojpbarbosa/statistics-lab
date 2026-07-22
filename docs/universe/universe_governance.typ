@@ -28,6 +28,18 @@ This document defines how the initial bond issuer universe is built and maintain
 - Names with unclear investor recognition fit for the target audience.
 - Sovereign issuers are out of scope for this corporate notes framework.
 
+== Desk-Editable Columns
+`data/universe.csv` carries the desk's own inputs alongside the identifiers:
+`recognition_score`, `internal_rating`, `equity_ticker` and `cds_ticker`
+handle overrides, `isin` for the ISIN-keyed sources, and `state_linked`.
+
+`state_linked` marks state-owned and quasi-sovereign issuers (`yes` or blank).
+These names carry sovereign support in their rating and move with their
+sovereign, so "viable versus Brazil" does not make them a diversification away
+from Brazil. Brazil-domiciled names are detected from `country` automatically;
+`state_linked` is for the SOEs elsewhere in the Latin America basket and needs a
+desk pass to fill.
+
 == Universe Structure
 The universe is split into baskets:
 - Brazil Core Basket

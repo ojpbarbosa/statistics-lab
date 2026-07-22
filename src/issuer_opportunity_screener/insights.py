@@ -9,7 +9,12 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from issuer_opportunity_screener.scoring import IssuerScore, screen_frame, score_snapshot
+from issuer_opportunity_screener.scoring import (
+    IssuerScore,
+    history_is_stale,
+    screen_frame,
+    score_snapshot,
+)
 from issuer_opportunity_screener.snapshots import Snapshot
 
 MOVE_THRESHOLD_BPS = 15.0
@@ -29,8 +34,16 @@ def _primary_spread(frame: pd.DataFrame) -> pd.Series:
     return frame.cds_5y_bps.fillna(frame.bond_z_spread_bps)
 
 
-def movers_frame(current: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
-    """Per-ticker comparison of two screen frames (from screen_frame)."""
+def movers_frame(
+    current: pd.DataFrame,
+    baseline: pd.DataFrame,
+    brazil_now: float | None = None,
+    brazil_then: float | None = None,
+) -> pd.DataFrame:
+    """Per-ticker comparison of two screen frames (from screen_frame).
+
+    Passing the two Brazil levels adds brazil_delta_bps, which is what separates
+    a name that moved from a name that stood still while the benchmark moved."""
     now = current.assign(spread_now=_primary_spread(current))[
         ["issuer", "ticker", "basket", "spread_now", "spread_vs_brazil_bps", "viable", "composite", "tier"]
     ].rename(columns={"spread_vs_brazil_bps": "vs_brazil_now", "viable": "viable_now", "composite": "composite_now", "tier": "tier_now"})
@@ -39,6 +52,8 @@ def movers_frame(current: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
     ].rename(columns={"spread_vs_brazil_bps": "vs_brazil_then", "viable": "viable_then", "composite": "composite_then", "tier": "tier_then"})
     merged = now.merge(then, on="ticker", how="outer")
     merged["delta_bps"] = merged.spread_now - merged.spread_then
+    if brazil_now is not None and brazil_then is not None:
+        merged["brazil_delta_bps"] = float(brazil_now) - float(brazil_then)
     merged["status"] = "both"
     merged.loc[merged.spread_then.isna() & merged.spread_now.notna(), "status"] = "new"
     merged.loc[merged.spread_now.isna() & merged.spread_then.notna(), "status"] = "dropped"
@@ -47,9 +62,24 @@ def movers_frame(current: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
 
 def own_history_percentile(snap: Snapshot, ticker: str, spread_bps: float) -> float | None:
     history = snap.history[snap.history.ticker == ticker].spread_bps.astype(float)
-    if len(history) < 12:
+    if len(history) < 12 or history_is_stale(history.tolist()):
         return None
     return 100.0 * (history <= spread_bps).sum() / len(history)
+
+
+def _flip_attribution(row) -> str:
+    """Whether a viability flip was the name or the benchmark. Brazil's own CDS
+    moves more than the 20 bps tolerance in a normal week."""
+    brazil_delta = getattr(row, "brazil_delta_bps", None)
+    issuer_delta = getattr(row, "delta_bps", None)
+    if brazil_delta is None or issuer_delta is None or pd.isna(brazil_delta) or pd.isna(issuer_delta):
+        return ""
+    if abs(brazil_delta) > abs(issuer_delta):
+        return (
+            f", driven by Brazil moving {brazil_delta:+.0f} bps while the name itself "
+            f"moved {issuer_delta:+.0f} bps"
+        )
+    return f" (the name moved {issuer_delta:+.0f} bps, Brazil {brazil_delta:+.0f} bps)"
 
 
 def build_insights(
@@ -87,14 +117,20 @@ def build_insights(
         insights.append(
             Insight(
                 "now_viable", row.ticker, magnitude=float(row.vs_brazil_now or 0),
-                message=f"{row.issuer} ({row.ticker}) became viable vs Brazil (now {row.vs_brazil_now:+.0f} bps)",
+                message=(
+                    f"{row.issuer} ({row.ticker}) became viable vs Brazil "
+                    f"(now {row.vs_brazil_now:+.0f} bps){_flip_attribution(row)}"
+                ),
             )
         )
     for row in both[(both.viable_now == False) & (both.viable_then == True)].itertuples():  # noqa: E712
         insights.append(
             Insight(
                 "lost_viability", row.ticker, magnitude=float(row.vs_brazil_now or 0),
-                message=f"{row.issuer} ({row.ticker}) lost viability vs Brazil (now {row.vs_brazil_now:+.0f} bps)",
+                message=(
+                    f"{row.issuer} ({row.ticker}) lost viability vs Brazil "
+                    f"(now {row.vs_brazil_now:+.0f} bps){_flip_attribution(row)}"
+                ),
             )
         )
 

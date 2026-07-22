@@ -16,9 +16,12 @@ from issuer_opportunity_screener.universe import load_universe
 
 log = get_logger("universe")
 
+# Every column load_universe reads. A column missing here is silently dropped
+# from every row the next time the file is rewritten.
 UNIVERSE_FIELDS = [
     "issuer", "ticker", "basket", "country", "sector",
     "recognition_score", "internal_rating", "equity_ticker", "cds_ticker",
+    "isin", "state_linked",
 ]
 QUARANTINE_FIELDS = UNIVERSE_FIELDS + ["quarantine_reason", "quarantined_at"]
 
@@ -32,7 +35,9 @@ def _read_rows(path: Path) -> list[dict]:
 
 def _write_rows(path: Path, rows: list[dict], fields: list[str]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        # csv defaults to CRLF, which would rewrite every line of the file the
+        # first time the desk adds a name through the form.
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") or "" for field in fields})
